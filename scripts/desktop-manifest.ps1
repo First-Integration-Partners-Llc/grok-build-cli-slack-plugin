@@ -1,8 +1,11 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string] $DesktopName,
+    [string] $DesktopName = $env:SLACK_DESKTOP_NAME,
     [string] $ManifestPath
 )
+
+if ([string]::IsNullOrWhiteSpace($DesktopName)) {
+    throw "Pass -DesktopName, or set SLACK_DESKTOP_NAME."
+}
 
 $ErrorActionPreference = "Stop"
 

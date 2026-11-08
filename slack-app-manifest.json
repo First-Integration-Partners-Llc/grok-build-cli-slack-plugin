@@ -39,6 +39,7 @@
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
+    "is_hosted": false,
     "token_rotation_enabled": false
   }
 }

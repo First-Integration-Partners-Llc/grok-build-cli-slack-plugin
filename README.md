@@ -31,32 +31,101 @@ A session that is not open is resumed and given the Slack text as its prompt.
 
 A session that is already open in a Grok window cannot be opened a second time, and Grok does not accept the text into that window. The listener holds the message, says so in the thread, and delivers it when the session is free.
 
-## Create the bot
+## Install
 
 Socket Mode apps cannot be listed in the Slack Marketplace. Create this one in your own workspace. On Enterprise Grid it can be deployed to the org, and it still is not a Marketplace app.
 
-`slack-app-manifest.json` turns Socket Mode on and subscribes to `app_mention`. Slack delivers those events over a WebSocket. Do not enter a Request URL. With Socket Mode on, Slack does not use one, and events are not sent to HTTP instead.
+### 1. Install the plugin
 
-```powershell
-./scripts/desktop-manifest.ps1 -DesktopName "grokbuildcli-desktop"
-```
-
-The app name is trimmed to 35 characters. The bot display name is trimmed to 80. Create the app from that JSON at [api.slack.com/apps](https://api.slack.com/apps?new_app=1), in the workspace where this desktop should appear.
-
-Then collect two tokens. Keep both out of git.
-
-1. An app-level token, `xapp-`. Turning Socket Mode on offers this step. You can also create it under **Basic Information → App-level tokens**. The listener sends it as `SLACK_APP_TOKEN` to [`apps.connections.open`](https://docs.slack.dev/reference/methods/apps.connections.open), which returns a fresh WebSocket URL. That URL is not stable.
-2. A bot token, `xoxb-`, from **Install App** on the workspace. The listener uses it as `SLACK_BOT_TOKEN` to post. Installing is separate from the app-level token.
-
-Invite `@grokbuildcli-desktop` into each channel it should hear. Mentions arrive only while this desktop is connected. If the listener is down, those events are not waiting on a Request URL.
-
-## Install the plugin
+From a checkout of this repo:
 
 ```bash
 grok plugin install ./grok-build-cli-slack-plugin --trust
 ```
 
 Turn off the other plugin named `slack`. That one posts as the signed-in user.
+
+### 2. Print the manifest
+
+Pick the name people will invite, such as `grokbuildcli-desktop`. Slack keeps 35 characters of the app name and 80 of the bot display name.
+
+macOS or Linux, with `python3` on `PATH`:
+
+```bash
+./scripts/desktop-manifest.sh grokbuildcli-desktop
+```
+
+Windows:
+
+```powershell
+./scripts/desktop-manifest.ps1 -DesktopName "grokbuildcli-desktop"
+```
+
+Either script also reads `SLACK_DESKTOP_NAME` when you omit the name. Copy the printed JSON.
+
+### 3. Create the app and turn on the WebSocket
+
+Slack's guide is [Using Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode). The manifest already sets `socket_mode_enabled` and `is_hosted` to false, and it subscribes the bot to `app_mention`.
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps?new_app=1) and choose **From a manifest**.
+2. Pick the workspace where this desktop should appear. Paste the JSON. Create the app.
+3. Open **Socket Mode** in the sidebar. Slack tells you the app uses a WebSocket and does not need a public Request URL. **Enable Socket Mode** must be on. The manifest turns it on. If the page asks you to generate a token before the switch will stay on, do the next step and come back.
+4. Generate the app-level token. The Socket Mode page offers this when you enable it. The same control is **Basic Information → App-level tokens → Generate Token and Scopes**. Name it `desktop-listener`. Add the scope `connections:write`. That scope is what lets the app call [`apps.connections.open`](https://docs.slack.dev/reference/methods/apps.connections.open) and open a WebSocket. Generate, then copy the value that starts with `xapp-`. Slack shows a new token's secret at creation. Store it before you close the dialog.
+5. Open **Event Subscriptions**. With Socket Mode on, Slack does not ask for a Request URL. Leave that field empty. Confirm the bot event `app_mention` is listed, and that the page is turned on. Save if Slack shows **Save Changes**.
+6. Open **OAuth & Permissions** and confirm the bot token scopes from the manifest are present. Click **Install to Workspace** and allow it. Copy the **Bot User OAuth Token**. It starts with `xoxb-`. This token is not the app-level token. Installing does not replace `xapp-`.
+7. Do not add a user token scope. This bot posts as itself.
+
+Reinstall the app from **OAuth & Permissions** if you add a scope later. The old `xoxb-` value stops matching the new scopes. The `xapp-` token stays valid across that reinstall.
+
+Events arrive only while this desktop holds the WebSocket. Slack does not keep them on an HTTP URL for later. The WebSocket address itself changes. The listener asks for a new one with `SLACK_APP_TOKEN`. You do not paste a `wss://` URL anywhere.
+
+### 4. Save the credentials
+
+Three variables:
+
+| Variable | Value |
+| --- | --- |
+| `SLACK_DESKTOP_NAME` | The invite name, such as `grokbuildcli-desktop` |
+| `SLACK_APP_TOKEN` | The `xapp-` app-level token with `connections:write` |
+| `SLACK_BOT_TOKEN` | The `xoxb-` bot token from **Install App** |
+
+Put the real values into the file for this machine. Do not commit that edit.
+
+macOS. Edit `env/slack.macos.sh`, then load it for login shells:
+
+```bash
+echo "source $(pwd)/env/slack.macos.sh" >> ~/.zprofile
+source ./env/slack.macos.sh
+```
+
+A Grok Build process started from the Dock does not read `~/.zprofile`. The comments in `env/slack.macos.sh` have the `launchctl setenv` lines for that case. Run them once, then quit and reopen Grok Build.
+
+Linux. Edit `env/slack.linux.sh`, then load it for login shells:
+
+```bash
+echo "source $(pwd)/env/slack.linux.sh" >> ~/.profile
+source ./env/slack.linux.sh
+```
+
+If `~/.bashrc` does not source `~/.profile`, add the same `source` line there too. Start Grok Build from a new login session.
+
+Windows. Edit the three values at the top of `env/slack.windows.ps1`, then:
+
+```powershell
+pwsh -File .\env\slack.windows.ps1
+```
+
+That writes them into the Windows user environment and into the current PowerShell process. Quit Grok Build and start it again so it inherits the user environment.
+
+### 5. Invite the bot
+
+In each channel it should hear, run:
+
+```text
+/invite @grokbuildcli-desktop
+```
+
+Use the display name Slack shows if it shortened the one you chose. A mention in a channel the bot has not joined does not arrive.
 
 ## License
 
