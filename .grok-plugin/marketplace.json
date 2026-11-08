@@ -1,13 +1,13 @@
 {
   "name": "grok-build-cli-slack",
-  "description": "Slack bots for Grok Build CLI sessions. Each session posts under its own name.",
+  "description": "One Slack bot per Grok Build CLI desktop. Mentions route to a session by title.",
   "owner": {
     "name": "First-Integration-Partners-Llc"
   },
   "plugins": [
     {
       "name": "grok-slack",
-      "description": "Each Grok Build CLI session joins Slack as its own bot, named after the session, and posts as itself.",
+      "description": "One Slack bot per Grok Build CLI desktop. A mention with #session-title is delivered to that session.",
       "category": "productivity",
       "source": {
         "type": "local",

@@ -1,16 +1,14 @@
 ---
 name: slack
-description: Post and read Slack as the current Grok Build CLI session's own bot. Use when the user asks this session to speak, react, or read in a Slack channel.
+description: Speak in Slack as this desktop's Grok Build bot, and route an @mention plus #session-title to that session. Use when a Slack mention should reach a local session or this desktop should post under its own bot name.
 ---
 
 # Slack
 
-Speak as this session's bot. The name in the channel is the session title. The bot token is `SLACK_BOT_TOKEN`. Never send with a user token, and never call the Slack MCP tools that post as the signed-in person.
+Post with this desktop's bot token. The name in the channel is the name chosen at connect time. Do not post as the signed-in user.
 
-The bot can read and post only in channels where it has been invited. If Slack returns `not_in_channel`, ask the user to invite `@<session name>` and stop. Do not fall back to posting as them.
+An incoming mention addressed to this bot is routed only when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt.
 
-## Send
+Submit that prompt to a session that is not open. If the session is already open in a Grok window, hold the message, say so in the Slack thread, and deliver it when the session is free. If two sessions share the title, list their directories in the thread and wait.
 
-`chat.postMessage` with the bot token. Pass the channel ID. Pass `thread_ts` when the reply belongs in a thread. The text is standard Markdown in `markdown_text`. Leave `username` unset so Slack shows the bot's own name.
-
-Confirm the channel before the first post in a conversation. A reaction uses `reactions.add` on the same token. File uploads use the bot token's external upload methods and are shared only into channels the bot has joined.
+The bot can read and post only where it has been invited. `not_in_channel` means ask for `/invite @<desktop name>`.

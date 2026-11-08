@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string] $SessionName,
+    [string] $DesktopName,
     [string] $ManifestPath
 )
 
@@ -10,12 +10,11 @@ if (-not $ManifestPath) {
     $ManifestPath = Join-Path $PSScriptRoot "..\slack-app-manifest.json"
 }
 
-# Slack's app name field holds 35 characters. The bot display name holds 80.
-$appName = $SessionName.Trim()
+$appName = $DesktopName.Trim()
 if ($appName.Length -gt 35) {
     $appName = $appName.Substring(0, 35).TrimEnd()
 }
-$botName = $SessionName.Trim()
+$botName = $DesktopName.Trim()
 if ($botName.Length -gt 80) {
     $botName = $botName.Substring(0, 80).TrimEnd()
 }

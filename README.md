@@ -1,34 +1,45 @@
 # grok-build-cli-slack-plugin
 
-Each Grok Build CLI session joins Slack as its own bot. The bot's name is the session title. Someone invites it into a channel, and it posts there as itself.
+One Slack bot per Grok Build CLI install. You choose its name when you connect it, invite that bot into the channels it should hear, and it posts as itself.
 
-This is the Grok Bot path where a Bot has its own Slack app, named after the Bot, and you `/invite` it. It is not the other Slack connection, the one that posts as your user. That one is what Claude uses, and this plugin does not do that.
+A mention names the session:
 
-## How a session shows up
+```text
+@grokbuildcli-desktop #fix-login-bug look at the token refresh
+```
 
-Slack gives one app one bot user. A name you can invite is a bot user, so each session is its own Slack app.
+`grokbuildcli-desktop` is the name you chose for this desktop. `#fix-login-bug` is the session title. The desktop listener submits the rest of the message to that session.
 
-1. Take the session title (`/rename`, or the generated title).
-2. Build a manifest with that name:
+## What connects
+
+The plugin follows the install, the same way this CLI stays signed in to your Grok account. It does not create a Slack app per session, and it does not post as your Slack user.
+
+| Piece | Where it lives |
+| --- | --- |
+| Bot name | Chosen once, on this desktop |
+| Membership | Invite `@that-name` into each channel |
+| Listener | Socket Mode on this machine, so no public URL |
+| Route | Text after the mention: `#session-title` plus the prompt |
+
+Slack also uses `#name` for a channel link. The listener accepts that form and the plain-text form, and uses the name either way.
+
+Session titles are matched on this machine. A manual `/rename` wins over the generated title. Two sessions with the same title get a reply in the thread listing their directories. The listener does not pick one.
+
+## Delivery
+
+A session that is not open is resumed and given the Slack text as its prompt.
+
+A session that is already open in a Grok window cannot be opened a second time, and Grok does not accept the text into that window. The listener holds the message, says so in the thread, and delivers it when the session is free.
+
+## Create the bot
+
+`slack-app-manifest.json` is the bot for this desktop. Replace `DESKTOP_NAME` with the name you want to invite, then create an internal app from that JSON at [api.slack.com/apps](https://api.slack.com/apps?new_app=1). Install it, invite it, and keep the bot token and the Socket Mode app token out of git.
 
 ```powershell
-./scripts/session-manifest.ps1 -SessionName "Fix login bug"
+./scripts/desktop-manifest.ps1 -DesktopName "grokbuildcli-desktop"
 ```
 
 The app name is trimmed to 35 characters. The bot display name is trimmed to 80.
-
-3. Create an internal app from that JSON: [api.slack.com/apps](https://api.slack.com/apps?new_app=1), **From a manifest**.
-4. Install it and keep the bot token out of git:
-
-```powershell
-$env:SLACK_BOT_TOKEN = "xoxb-..."
-```
-
-5. In the channel, invite it: `/invite @Fix login bug`.
-
-Until the invite, Slack answers `not_in_channel`. The session does not post under your name to get around that.
-
-Grok Bot creates the app from its own servers when you choose **Bring to your team's Slack**. That API is not offered to this CLI. A workspace that reviews new apps shows the same approval wait Grok Bot shows. One session, one app, one invite list.
 
 ## Install the plugin
 
@@ -36,16 +47,7 @@ Grok Bot creates the app from its own servers when you choose **Bring to your te
 grok plugin install ./grok-build-cli-slack-plugin --trust
 ```
 
-Turn off the other plugin named `slack`. Its server posts as the signed-in user.
-
-## Layout
-
-| Path | Role |
-| --- | --- |
-| `slack-app-manifest.json` | Bot-user manifest. `SESSION_NAME` is replaced with the session title |
-| `scripts/session-manifest.ps1` | Prints the manifest for one session |
-| `skills/slack-setup/` | Creates this session's bot |
-| `skills/slack/` | Posts with the bot token only |
+Turn off the other plugin named `slack`. That one posts as the signed-in user.
 
 ## License
 

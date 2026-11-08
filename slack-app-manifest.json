@@ -4,13 +4,13 @@
     "minor_version": 1
   },
   "display_information": {
-    "name": "SESSION_NAME",
-    "description": "Grok Build CLI session. Posts as itself in channels it has joined.",
+    "name": "DESKTOP_NAME",
+    "description": "Grok Build CLI on this desktop. Posts as itself.",
     "background_color": "#1a1a1a"
   },
   "features": {
     "bot_user": {
-      "display_name": "SESSION_NAME",
+      "display_name": "DESKTOP_NAME",
       "always_online": false
     }
   },
@@ -29,19 +29,16 @@
         "mpim:read",
         "reactions:read",
         "reactions:write",
-        "users:read",
-        "files:read",
-        "files:write",
-        "canvases:read",
-        "canvases:write",
-        "lists:read",
-        "lists:write"
+        "users:read"
       ]
     }
   },
   "settings": {
+    "event_subscriptions": {
+      "bot_events": ["app_mention"]
+    },
     "org_deploy_enabled": false,
-    "socket_mode_enabled": false,
+    "socket_mode_enabled": true,
     "token_rotation_enabled": false
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "grok-slack",
-  "version": "0.2.0",
-  "description": "Each Grok Build CLI session joins Slack as its own bot, named after the session, and posts as itself.",
+  "version": "0.3.0",
+  "description": "One Slack bot per Grok Build CLI desktop. A mention with #session-title is delivered to that session.",
   "author": {
     "name": "First-Integration-Partners-Llc"
   },
