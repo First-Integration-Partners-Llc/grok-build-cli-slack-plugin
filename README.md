@@ -33,13 +33,22 @@ A session that is already open in a Grok window cannot be opened a second time, 
 
 ## Create the bot
 
-`slack-app-manifest.json` is the bot for this desktop. Replace `DESKTOP_NAME` with the name you want to invite, then create an internal app from that JSON at [api.slack.com/apps](https://api.slack.com/apps?new_app=1). Install it, invite it, and keep the bot token and the Socket Mode app token out of git.
+Socket Mode apps cannot be listed in the Slack Marketplace. Create this one in your own workspace. On Enterprise Grid it can be deployed to the org, and it still is not a Marketplace app.
+
+`slack-app-manifest.json` turns Socket Mode on and subscribes to `app_mention`. Slack delivers those events over a WebSocket. Do not enter a Request URL. With Socket Mode on, Slack does not use one, and events are not sent to HTTP instead.
 
 ```powershell
 ./scripts/desktop-manifest.ps1 -DesktopName "grokbuildcli-desktop"
 ```
 
-The app name is trimmed to 35 characters. The bot display name is trimmed to 80.
+The app name is trimmed to 35 characters. The bot display name is trimmed to 80. Create the app from that JSON at [api.slack.com/apps](https://api.slack.com/apps?new_app=1), in the workspace where this desktop should appear.
+
+Then collect two tokens. Keep both out of git.
+
+1. An app-level token, `xapp-`. Turning Socket Mode on offers this step. You can also create it under **Basic Information → App-level tokens**. The listener sends it as `SLACK_APP_TOKEN` to [`apps.connections.open`](https://docs.slack.dev/reference/methods/apps.connections.open), which returns a fresh WebSocket URL. That URL is not stable.
+2. A bot token, `xoxb-`, from **Install App** on the workspace. The listener uses it as `SLACK_BOT_TOKEN` to post. Installing is separate from the app-level token.
+
+Invite `@grokbuildcli-desktop` into each channel it should hear. Mentions arrive only while this desktop is connected. If the listener is down, those events are not waiting on a Request URL.
 
 ## Install the plugin
 
