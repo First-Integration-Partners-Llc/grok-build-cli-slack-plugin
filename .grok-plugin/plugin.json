@@ -1,0 +1,10 @@
+{
+  "name": "grok-slack",
+  "version": "0.1.0",
+  "description": "Connects Grok Build CLI to Slack as the signed-in user, the same way the Grok Bot Slack plugin does.",
+  "author": {
+    "name": "First-Integration-Partners-Llc"
+  },
+  "license": "MIT",
+  "keywords": ["slack", "grok", "mcp"]
+}
