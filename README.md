@@ -1,66 +1,51 @@
 # grok-build-cli-slack-plugin
 
-A Grok Build CLI plugin that connects to Slack the way the Grok Bot Slack plugin does. It uses Slack's hosted MCP server at `https://mcp.slack.com/mcp`. After you approve it, search, read, and post run as your Slack user, in the conversations that user can post in.
+Each Grok Build CLI session joins Slack as its own bot. The bot's name is the session title. Someone invites it into a channel, and it posts there as itself.
 
-The Slack plugin shipped for Claude and Cursor hardcodes Slack's partner app. Grok Build is not one of those clients, so that plugin stays on "auth required." This plugin uses an app you register, with Grok Build's loopback redirect and PKCE, so no client secret goes in git.
+This is the Grok Bot path where a Bot has its own Slack app, named after the Bot, and you `/invite` it. It is not the other Slack connection, the one that posts as your user. That one is what Claude uses, and this plugin does not do that.
 
-## Install
+## How a session shows up
 
-From a checkout of this repo:
+Slack gives one app one bot user. A name you can invite is a bot user, so each session is its own Slack app.
 
-```bash
-grok plugin marketplace add ./grok-build-cli-slack-plugin
-grok plugin install grok-slack --trust
+1. Take the session title (`/rename`, or the generated title).
+2. Build a manifest with that name:
+
+```powershell
+./scripts/session-manifest.ps1 -SessionName "Fix login bug"
 ```
 
-Or install the directory straight away:
+The app name is trimmed to 35 characters. The bot display name is trimmed to 80.
+
+3. Create an internal app from that JSON: [api.slack.com/apps](https://api.slack.com/apps?new_app=1), **From a manifest**.
+4. Install it and keep the bot token out of git:
+
+```powershell
+$env:SLACK_BOT_TOKEN = "xoxb-..."
+```
+
+5. In the channel, invite it: `/invite @Fix login bug`.
+
+Until the invite, Slack answers `not_in_channel`. The session does not post under your name to get around that.
+
+Grok Bot creates the app from its own servers when you choose **Bring to your team's Slack**. That API is not offered to this CLI. A workspace that reviews new apps shows the same approval wait Grok Bot shows. One session, one app, one invite list.
+
+## Install the plugin
 
 ```bash
 grok plugin install ./grok-build-cli-slack-plugin --trust
 ```
 
-Turn the plugin on if `grok plugin list` shows it disabled. In `~/.grok/config.toml`:
-
-```toml
-[plugins]
-enabled = ["grok-slack"]
-```
-
-Disable the other plugin named `slack`. Both cannot own Slack for this CLI.
-
-## Create the Slack app
-
-Slack only allows MCP from an internal app or a Slack Marketplace app.
-
-1. Open [api.slack.com/apps](https://api.slack.com/apps?new_app=1) and choose **From a manifest**.
-2. Paste `slack-app-manifest.json`. Create the app in the workspace you want.
-3. Leave **PKCE** on. The manifest requests user scopes only.
-4. Copy the **Client ID**.
-
-Set this in the environment Grok Build is launched from:
-
-```bash
-SLACK_MCP_CLIENT_ID=1234567890.1234567890
-```
-
-Restart Grok Build. Run `/mcps`, select `grok-slack`, and press `i`. Approve the app in the browser. Grok Build listens on `http://127.0.0.1:3118/callback` and stores the token in `~/.grok/mcp_credentials.json`.
-
-If your workspace requires admin approval, approve **Grok Build CLI** before signing in.
-
-An internal app works in the workspace where you created it. To ship one client ID for every Grok Build user, publish this same manifest in the Slack Marketplace, then replace `${SLACK_MCP_CLIENT_ID}` in `.mcp.json` with that published client ID.
-
-## What you can ask
-
-Search public channels, read a channel or thread, draft or send a message, react, upload a file, and work with canvases and lists. Private channels and DMs are included only when you ask for them. A sent message appears as you.
+Turn off the other plugin named `slack`. Its server posts as the signed-in user.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `.mcp.json` | Points Grok Build at Slack's MCP server and the OAuth callback port |
-| `slack-app-manifest.json` | Slack app to create: redirect URLs, PKCE, user scopes |
-| `skills/slack-setup/` | Walks through connecting the app |
-| `skills/slack/` | How to call the Slack tools once connected |
+| `slack-app-manifest.json` | Bot-user manifest. `SESSION_NAME` is replaced with the session title |
+| `scripts/session-manifest.ps1` | Prints the manifest for one session |
+| `skills/slack-setup/` | Creates this session's bot |
+| `skills/slack/` | Posts with the bot token only |
 
 ## License
 

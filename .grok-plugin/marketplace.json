@@ -1,20 +1,20 @@
 {
   "name": "grok-build-cli-slack",
-  "description": "Slack for Grok Build CLI. Posts and searches as the Slack user who connects it.",
+  "description": "Slack bots for Grok Build CLI sessions. Each session posts under its own name.",
   "owner": {
     "name": "First-Integration-Partners-Llc"
   },
   "plugins": [
     {
       "name": "grok-slack",
-      "description": "Connects Grok Build CLI to Slack as the signed-in user, the same way the Grok Bot Slack plugin does.",
+      "description": "Each Grok Build CLI session joins Slack as its own bot, named after the session, and posts as itself.",
       "category": "productivity",
       "source": {
         "type": "local",
         "path": "."
       },
       "keywords": ["slack", "grok bot"],
-      "domains": ["slack.com", "mcp.slack.com"]
+      "domains": ["slack.com"]
     }
   ]
 }
