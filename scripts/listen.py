@@ -32,6 +32,7 @@ HOLD_REPLY = "That session is busy on this desktop. I will deliver this when it 
 _LOCK_HANDLE = None
 _BUSY = set()
 _BUSY_LOCK = threading.Lock()
+_HELD_WAITING = set()
 
 
 def state_dir():
@@ -360,7 +361,15 @@ def deliver_held(bot_token):
         if not session:
             continue
         if session_id in active and session_turn_busy(session.get("dir") or ""):
+            key = str(path)
+            with _BUSY_LOCK:
+                first = key not in _HELD_WAITING
+                _HELD_WAITING.add(key)
+            if first:
+                print("Holding mention for {0} until the reply finishes.".format(session["title"]), flush=True)
             continue
+        with _BUSY_LOCK:
+            _HELD_WAITING.discard(str(path))
         print("Delivering held mention to {0}.".format(session["title"]), flush=True)
         start_delivery(
             bot_token,
@@ -451,7 +460,10 @@ class SlackSocket:
     def send_text(self, text):
         self.send(0x1, text.encode("utf-8"))
 
-    def recv_text(self):
+    def recv_text(self, control_deadline=15):
+        # Slack sends ping frames often enough that a socket timeout never
+        # arrives. Control frames must not postpone the held-message scan.
+        started = time.monotonic()
         parts = []
         while True:
             frame = self._frame()
@@ -460,10 +472,11 @@ class SlackSocket:
             fin, opcode, payload = frame
             if opcode == 0x8:
                 return CLOSED
-            if opcode == 0x9:
-                self.send(0xA, payload)
-                continue
-            if opcode == 0xA:
+            if opcode in (0x9, 0xA):
+                if opcode == 0x9:
+                    self.send(0xA, payload)
+                if time.monotonic() - started >= control_deadline:
+                    return IDLE
                 continue
             if opcode in (0x0, 0x1, 0x2):
                 parts.append(payload)
@@ -616,8 +629,18 @@ def take_listener_lock():
     return True
 
 
+def _held_scan_loop(bot_token):
+    while True:
+        time.sleep(15)
+        try:
+            deliver_held(bot_token)
+        except Exception as exc:
+            print("Held delivery error: {0}".format(exc), flush=True)
+
+
 def run_listener(app_token, bot_token):
     print("Slack listener starting. Mentions route as @bot #session-title.", flush=True)
+    threading.Thread(target=_held_scan_loop, args=(bot_token,), daemon=True).start()
     while True:
         slack = None
         try:
@@ -712,6 +735,7 @@ def self_test():
         finally:
             os.kill = original_kill
     _self_test_websocket()
+    _self_test_ping_idle()
     _self_test_lock()
     print("self-test ok")
     return 0
@@ -769,6 +793,58 @@ def _self_test_websocket():
     thread.join(timeout=3)
     if seen.get("text") != '{"envelope_id":"abc"}':
         raise SystemExit("websocket client frame was not masked")
+
+
+def _self_test_ping_idle():
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def serve():
+        conn, _ = server.accept()
+        conn.settimeout(3)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            data += chunk
+        key = ""
+        for line in data.decode("ascii", "replace").split("\r\n"):
+            if line.lower().startswith("sec-websocket-key:"):
+                key = line.split(":", 1)[1].strip()
+        accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        conn.sendall((
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: {0}\r\n"
+            "\r\n"
+        ).format(accept).encode("ascii"))
+        try:
+            while True:
+                conn.sendall(bytes([0x89, 1, ord("z")]))
+                time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client = connect_websocket("ws://127.0.0.1:{0}/ping".format(port))
+    try:
+        started = time.monotonic()
+        got = client.recv_text(control_deadline=0.4)
+        if got is not IDLE:
+            raise SystemExit("pings should not block a held-message scan")
+        if time.monotonic() - started > 3:
+            raise SystemExit("ping idle wait was too long")
+    finally:
+        client.close()
+        server.close()
+    thread.join(timeout=2)
 
 
 def _self_test_lock():
