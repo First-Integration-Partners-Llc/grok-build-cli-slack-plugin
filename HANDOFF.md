@@ -18,7 +18,7 @@ The prompt given to Grok is the Slack text prefixed with `From Slack:` and a new
 
 ## Current code
 
-`main` is `b414bc1`. Plugin `grok-slack` is `0.4.3`, MIT, author First-Integration-Partners-Llc. Marketplace name is `grok-build-cli-slack`. Origin is https://github.com/First-Integration-Partners-Llc/grok-build-cli-slack-plugin.git.
+Plugin `grok-slack` is `0.4.3`, MIT, author First-Integration-Partners-Llc. The listener behavior is `b414bc1`. This file is the commit after that. Marketplace name is `grok-build-cli-slack`. Origin is https://github.com/First-Integration-Partners-Llc/grok-build-cli-slack-plugin.git.
 
 `scripts/listen.py` is the listener on Windows, macOS, and Linux. Python standard library only. No pip.
 
