@@ -70,7 +70,7 @@ Slack's guide is [Using Socket Mode](https://docs.slack.dev/apis/events-api/usin
 1. Open [api.slack.com/apps](https://api.slack.com/apps?new_app=1) and choose **From a manifest**.
 2. Pick the workspace where this desktop should appear. Paste the JSON. Create the app.
 3. Open **Socket Mode** in the sidebar. Slack tells you the app uses a WebSocket and does not need a public Request URL. **Enable Socket Mode** must be on. The manifest turns it on. If the page asks you to generate a token before the switch will stay on, do the next step and come back.
-4. Generate the app-level token. The Socket Mode page offers this when you enable it. The same control is **Basic Information → App-level tokens → Generate Token and Scopes**. Name it `desktop-listener`. Add the scope `connections:write`. That scope is what lets the app call [`apps.connections.open`](https://docs.slack.dev/reference/methods/apps.connections.open) and open a WebSocket. Generate, then copy the value that starts with `xapp-`. Slack shows a new token's secret at creation. Store it before you close the dialog.
+4. Open **Basic Information**. The top of that page lists **App ID**, **Client ID**, **Client Secret**, **Signing Secret**, and **Verification Token**. None of those is the WebSocket token. Scroll to **App-Level Tokens**. The row named `desktop-listener` is the token. Open it. The field labeled **Token** starts with `xapp-`. Slack does not label it `APP_TOKEN`. Copy that **Token** into `SLACK_APP_TOKEN`. Its scopes should include `connections:write` (route interactions and event payloads over WebSockets). `authorizations:read` may be listed next to it. That extra scope is fine. If `desktop-listener` is missing, use **Generate Token and Scopes**, name it `desktop-listener`, add `connections:write`, and copy the **Token** before you close the dialog.
 5. Open **Event Subscriptions**. With Socket Mode on, Slack does not ask for a Request URL. Leave that field empty. Confirm the bot event `app_mention` is listed, and that the page is turned on. Save if Slack shows **Save Changes**.
 6. Open **OAuth & Permissions** and confirm the bot token scopes from the manifest are present. Click **Install to Workspace** and allow it. Copy the **Bot User OAuth Token**. It starts with `xoxb-`. This token is not the app-level token. Installing does not replace `xapp-`.
 7. Do not add a user token scope. This bot posts as itself.
@@ -86,7 +86,7 @@ Three variables:
 | Variable | Value |
 | --- | --- |
 | `SLACK_DESKTOP_NAME` | The invite name, such as `grokbuildcli-desktop` |
-| `SLACK_APP_TOKEN` | The `xapp-` app-level token with `connections:write` |
+| `SLACK_APP_TOKEN` | The **Token** on the `desktop-listener` app-level token. It starts with `xapp-`. Not the Client Secret. |
 | `SLACK_BOT_TOKEN` | The `xoxb-` bot token from **Install App** |
 
 Put the real values into the file for this machine. Do not commit that edit.

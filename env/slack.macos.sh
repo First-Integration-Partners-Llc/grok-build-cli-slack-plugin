@@ -8,6 +8,7 @@
 # the bottom once, then quit and reopen Grok Build.
 
 export SLACK_DESKTOP_NAME="grokbuildcli-desktop"
+# Token on Basic Information → App-Level Tokens → desktop-listener. Not the Client Secret.
 export SLACK_APP_TOKEN="xapp-paste-the-app-level-token"
 export SLACK_BOT_TOKEN="xoxb-paste-the-bot-token"
 

@@ -7,6 +7,7 @@
 # the filled-in values.
 
 $DesktopName = "grokbuildcli-desktop"
+# Token field on Basic Information → App-Level Tokens → desktop-listener. Starts with xapp-.
 $AppToken = "xapp-paste-the-app-level-token"
 $BotToken = "xoxb-paste-the-bot-token"
 
