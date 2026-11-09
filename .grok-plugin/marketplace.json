@@ -1,13 +1,13 @@
 {
   "name": "grok-build-cli-slack",
-  "description": "One Slack bot per Grok Build CLI desktop. Mentions route to a session by title.",
+  "description": "One Slack bot per Grok Build CLI desktop on Windows, macOS, and Linux. The listener starts with the CLI.",
   "owner": {
     "name": "First-Integration-Partners-Llc"
   },
   "plugins": [
     {
       "name": "grok-slack",
-      "description": "One Slack bot per Grok Build CLI desktop. A mention with #session-title is delivered to that session.",
+      "description": "One Slack bot per Grok Build CLI desktop on Windows, macOS, and Linux. The listener starts when the CLI starts. A mention with #session-title is delivered to that session.",
       "category": "productivity",
       "source": {
         "type": "local",

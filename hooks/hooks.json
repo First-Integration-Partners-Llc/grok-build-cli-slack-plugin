@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 15,
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"${GROK_PLUGIN_ROOT}/scripts/start_listener.ps1\" 2>/dev/null || powershell -NoProfile -ExecutionPolicy Bypass -File \"${GROK_PLUGIN_ROOT}/scripts/start_listener.ps1\" 2>/dev/null || sh \"${GROK_PLUGIN_ROOT}/scripts/start_listener.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

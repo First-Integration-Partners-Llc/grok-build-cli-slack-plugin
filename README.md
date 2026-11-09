@@ -8,7 +8,7 @@ A mention names the session:
 @grokbuildcli-desktop #fix-login-bug look at the token refresh
 ```
 
-`grokbuildcli-desktop` is the name you chose for this desktop. `#fix-login-bug` is the session title. The desktop listener submits the rest of the message to that session.
+`grokbuildcli-desktop` is the name you chose for this desktop. `#fix-login-bug` is the session title. The desktop listener submits the rest of the message to that session. It starts with Grok Build on Windows, macOS, and Linux.
 
 ## What connects
 
@@ -18,7 +18,7 @@ The plugin follows the install, the same way this CLI stays signed in to your Gr
 | --- | --- |
 | Bot name | Chosen once, on this desktop |
 | Membership | Invite `@that-name` into each channel |
-| Listener | Socket Mode on this machine, so no public URL |
+| Listener | Starts with Grok Build on Windows, macOS, and Linux. Socket Mode, so no public URL |
 | Route | Text after the mention: `#session-title` plus the prompt |
 
 Slack also uses `#name` for a channel link. The listener accepts that form and the plain-text form, and uses the name either way.
@@ -134,15 +134,44 @@ In each channel it should hear, run:
 
 Use the display name Slack shows if it shortened the one you chose. A mention in a channel the bot has not joined does not arrive.
 
-## Run the listener
+## Listener
 
-Leave this running on the desktop. It connects with `SLACK_APP_TOKEN` and posts with `SLACK_BOT_TOKEN`. A mention `@your-bot #session-title` followed by the request is delivered to that session. A session that is already open is delivered after it closes.
+Installing the plugin with `--trust` registers a `SessionStart` hook. The next time Grok Build starts, or reopens a saved session, that hook starts the listener and returns. One listener runs per machine. A second session sees that it is already running.
+
+The hook needs `python3` or `python` on `PATH`. Nothing is installed from pip. On Windows the hook command uses `||`, which PowerShell 7 understands. Grok uses PowerShell 7 when `pwsh` is installed. Windows PowerShell 5.1 does not understand `||`; install PowerShell 7, or start the listener yourself with the script below.
+
+The listener reads `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` from the process environment, the Windows user environment, or `~/.config/grok-build-cli-slack.env`. Its log is `~/.config/grok-build-cli-slack/listener.log`.
+
+You can also leave a listener in a terminal. macOS:
+
+```bash
+./scripts/listen.macos.sh
+```
+
+Linux:
+
+```bash
+./scripts/listen.linux.sh
+```
+
+Windows:
 
 ```powershell
 pwsh -File ./scripts/listen.ps1
 ```
 
-`pwsh -File ./scripts/listen.ps1 -SelfTest` checks the mention parser without connecting to Slack.
+A mention `@your-bot #session-title` followed by the request is delivered to that session. A session that is already open is delivered after it closes.
+
+These check the mention parser without connecting to Slack:
+
+```bash
+./scripts/listen.macos.sh --self-test
+./scripts/listen.linux.sh --self-test
+```
+
+```powershell
+pwsh -File ./scripts/listen.ps1 -SelfTest
+```
 
 ## License
 
