@@ -89,33 +89,40 @@ Three variables:
 | `SLACK_APP_TOKEN` | The **Token** on the `desktop-listener` app-level token. It starts with `xapp-`. Not the Client Secret. |
 | `SLACK_BOT_TOKEN` | The `xoxb-` bot token from **Install App** |
 
-Put the real values into the file for this machine. Do not commit that edit.
+Pass the two tokens on the command line. Do not paste them into a file in this repository. The scripts reject an app token that does not start with `xapp-` and a bot token that does not start with `xoxb-`.
 
-macOS. Edit `env/slack.macos.sh`, then load it for login shells:
-
-```bash
-echo "source $(pwd)/env/slack.macos.sh" >> ~/.zprofile
-source ./env/slack.macos.sh
-```
-
-A Grok Build process started from the Dock does not read `~/.zprofile`. The comments in `env/slack.macos.sh` have the `launchctl setenv` lines for that case. Run them once, then quit and reopen Grok Build.
-
-Linux. Edit `env/slack.linux.sh`, then load it for login shells:
+macOS:
 
 ```bash
-echo "source $(pwd)/env/slack.linux.sh" >> ~/.profile
-source ./env/slack.linux.sh
+./env/slack.macos.sh \
+  --desktop-name grokbuildcli-desktop \
+  --app-token 'xapp-...' \
+  --bot-token 'xoxb-...'
 ```
 
-If `~/.bashrc` does not source `~/.profile`, add the same `source` line there too. Start Grok Build from a new login session.
+The script writes `~/.config/grok-build-cli-slack.env` with mode `600`, adds one `source` line to `~/.zprofile`, and runs `launchctl setenv` so Grok Build started from the Dock can see the variables. Quit Grok Build and open it again. The command can remain in the shell history on this Mac. It is not a file in this repo.
 
-Windows. Edit the three values at the top of `env/slack.windows.ps1`, then:
+Linux:
+
+```bash
+./env/slack.linux.sh \
+  --desktop-name grokbuildcli-desktop \
+  --app-token 'xapp-...' \
+  --bot-token 'xoxb-...'
+```
+
+The script writes the same env file under your home directory and adds one `source` line to `~/.profile`. If `~/.bashrc` does not source `~/.profile`, add that line there too. Start Grok Build from a new login session.
+
+Windows:
 
 ```powershell
-pwsh -File .\env\slack.windows.ps1
+pwsh -File .\env\slack.windows.ps1 `
+  -DesktopName "grokbuildcli-desktop" `
+  -AppToken "xapp-..." `
+  -BotToken "xoxb-..."
 ```
 
-That writes them into the Windows user environment and into the current PowerShell process. Quit Grok Build and start it again so it inherits the user environment.
+That stores the three variables in the Windows user environment. Quit Grok Build and start it again.
 
 ### 5. Invite the bot
 
