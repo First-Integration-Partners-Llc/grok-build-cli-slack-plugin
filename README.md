@@ -27,9 +27,9 @@ Session titles are matched on this machine. A manual `/rename` wins over the gen
 
 ## Delivery
 
-A session that is not open is resumed and given the Slack text as its prompt.
+A session that is closed, or open and waiting for the next prompt, is given the Slack text as its prompt.
 
-A session that is already open in a Grok window cannot be opened a second time, and Grok does not accept the text into that window. The listener holds the message, says so in the thread, and delivers it when the session is free.
+A session that is in the middle of a reply is left alone. The listener holds the message, says so in the thread, and delivers it when that reply finishes.
 
 ## Install
 
@@ -160,7 +160,7 @@ Windows:
 pwsh -File ./scripts/listen.ps1
 ```
 
-A mention `@your-bot #session-title` followed by the request is delivered to that session. A session that is already open is delivered after it closes.
+A mention `@your-bot #session-title` followed by the request is delivered to that session. An open session that is waiting for a prompt gets it immediately. A session that is mid-reply gets it when that reply finishes.
 
 These check the mention parser without connecting to Slack:
 
@@ -255,7 +255,7 @@ One manual `/rename` wins over generated titles with the same key. Two manual ti
 
 ### Delivery
 
-An open session is one whose id is in `~/.grok/active_sessions.json` and whose `pid` is still alive. That file is one object or an array of `{session_id, pid, cwd}`. On Windows the check opens the process. `os.kill(pid, 0)` is a Ctrl+C event there, and a live `grok.exe` returns "The parameter is incorrect." Access denied still counts as alive. Grok will not open that session a second time, and it will not accept the text into the window that has it. The listener writes `~/.config/grok-build-cli-slack/held/<guid>.json` and replies `That session is open on this desktop. I will deliver this when it is free.`
+An open session is one whose id is in `~/.grok/active_sessions.json` and whose `pid` is still alive. That file is one object or an array of `{session_id, pid, cwd}`. On Windows the check opens the process. `os.kill(pid, 0)` is a Ctrl+C event there, and a live `grok.exe` returns "The parameter is incorrect." Access denied still counts as alive. The session is busy only when the last `turn_started` or `turn_ended` line in its `events.jsonl` is `turn_started`. An open session whose last turn has ended is waiting, and the mention is delivered into that window. A busy session is held. The listener writes `~/.config/grok-build-cli-slack/held/<guid>.json` and replies `That session is busy on this desktop. I will deliver this when it is free.`
 
 Each held file is one message:
 
@@ -265,13 +265,13 @@ Each held file is one message:
 
 The prompt stored there, and the prompt passed to Grok, is the Slack text prefixed with `From Slack:` and a newline.
 
-A session that is not open is resumed in the background:
+A waiting session, open or closed, is given the prompt in the background:
 
 ```text
 grok --cwd <session cwd> -r <session id> -p <prompt> --output-format plain
 ```
 
-The socket loop does not wait for that process. Delivery runs on a daemon thread, and a session id already in that set is not started again. If the exit code is not 0, or the output contains `has it open` or `not sent`, the held file is written again and the hold sentence is posted. Otherwise the held file is deleted and the thread gets `Delivered to <title>.` Held files are scanned when the socket connects and on every 15 seconds of idle. A session that already has a delivery thread running is skipped in that scan, and its held file stays until that delivery finishes. A new mention for that same session, while it is not listed as open, is not written to a held file.
+The socket loop does not wait for that process. Delivery runs on a daemon thread, and a session id already in that set is not started again. If the exit code is not 0, or the output contains `has it open` or `not sent`, the held file is written again and the hold sentence is posted. Otherwise the held file is deleted and the thread gets `Delivered to <title>.` Held files are scanned when the socket connects and on every 15 seconds of idle. A session that is still mid-reply, or that already has a delivery thread running, is skipped in that scan, and its held file stays until that delivery finishes. A new mention that arrives while a delivery thread is already running for that session is not written to a held file.
 
 `not_in_channel` means the bot has not been invited. A failed `chat.postMessage` on the socket thread is logged and the socket reconnects. A failure inside a delivery thread is logged as `Delivery error` and does not reconnect the socket. The listener does not post as your user.
 

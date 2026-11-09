@@ -28,6 +28,7 @@ CLOSED = object()
 MENTION = re.compile(r"<#[A-Z0-9]+\|([^>]+)>|#([^\s#<>]+)")
 USER_MENTION = re.compile(r"<@[A-Z0-9]+>")
 BLOCKED_DELIVERY = re.compile(r"has it open|not sent", re.IGNORECASE)
+HOLD_REPLY = "That session is busy on this desktop. I will deliver this when it is free."
 _LOCK_HANDLE = None
 _BUSY = set()
 _BUSY_LOCK = threading.Lock()
@@ -144,6 +145,7 @@ def grok_sessions():
             "key": title_key(title),
             "manual": bool(summary.get("title_is_manual")),
             "cwd": str(info.get("cwd") or ""),
+            "dir": str(path.parent),
         })
     return found
 
@@ -207,6 +209,44 @@ def _windows_pid_alive(pid):
         return code.value == STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
+
+
+def session_turn_busy(directory):
+    # events.jsonl records turn_started when a reply begins and turn_ended when
+    # the window is waiting for the next prompt. An open idle session has ended.
+    path = Path(directory) / "events.jsonl"
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return False
+    try:
+        handle.seek(0, os.SEEK_END)
+        pos = handle.tell()
+        buf = b""
+        while pos > 0:
+            take = min(65536, pos)
+            pos -= take
+            handle.seek(pos)
+            buf = handle.read(take) + buf
+            lines = buf.splitlines()
+            if pos > 0:
+                buf = lines[0] if lines else b""
+                lines = lines[1:]
+            for raw in reversed(lines):
+                if b"turn_started" not in raw and b"turn_ended" not in raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeError):
+                    continue
+                kind = event.get("type")
+                if kind == "turn_started":
+                    return True
+                if kind == "turn_ended":
+                    return False
+        return False
+    finally:
+        handle.close()
 
 
 def active_session_ids():
@@ -290,7 +330,7 @@ def start_delivery(bot_token, session, channel, thread_ts, prompt, held_path=Non
             blocked = completed.returncode != 0 or BLOCKED_DELIVERY.search(output)
             if blocked:
                 save_held(session["id"], channel, thread_ts, prompt, target)
-                text = "That session is open on this desktop. I will deliver this when it is free."
+                text = HOLD_REPLY
             else:
                 if target.exists():
                     target.unlink()
@@ -314,10 +354,12 @@ def deliver_held(bot_token):
         except (OSError, json.JSONDecodeError, UnicodeError):
             continue
         session_id = str(held.get("session_id") or "")
-        if not session_id or session_id in active or delivery_busy(session_id):
+        if not session_id or delivery_busy(session_id):
             continue
         session = sessions.get(session_id)
         if not session:
+            continue
+        if session_id in active and session_turn_busy(session.get("dir") or ""):
             continue
         print("Delivering held mention to {0}.".format(session["title"]), flush=True)
         start_delivery(
@@ -514,9 +556,9 @@ def handle_mention(bot_token, event):
         return
     session = resolved["session"]
     prompt = "From Slack:\n{0}".format(request["prompt"])
-    if session["id"] in active_session_ids():
+    if session["id"] in active_session_ids() and session_turn_busy(session.get("dir") or ""):
         save_held(session["id"], channel, thread, prompt)
-        post_slack(bot_token, channel, thread, "That session is open on this desktop. I will deliver this when it is free.")
+        post_slack(bot_token, channel, thread, HOLD_REPLY)
         return
     print("Delivering to {0}.".format(session["title"]), flush=True)
     start_delivery(bot_token, session, channel, thread, prompt)
@@ -608,6 +650,23 @@ def run_listener(app_token, bot_token):
         time.sleep(5)
 
 
+def _self_test_turn_busy():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "events.jsonl"
+        path.write_text('{"type":"turn_started"}\n{"type":"turn_ended"}\n', encoding="utf-8")
+        if session_turn_busy(directory):
+            raise SystemExit("ended turn should be idle")
+        path.write_text(
+            '{"type":"turn_ended"}\n{"type":"turn_started"}\n{"type":"phase_changed"}\n',
+            encoding="utf-8",
+        )
+        if not session_turn_busy(directory):
+            raise SystemExit("started turn should be busy")
+        if session_turn_busy(str(Path(directory) / "missing")):
+            raise SystemExit("missing events should be idle")
+
+
 def self_test():
     parsed = mention_request("<@U123> #server-admin look at the token")
     if not parsed or parsed["tag"] != "server-admin" or parsed["prompt"] != "look at the token":
@@ -637,6 +696,7 @@ def self_test():
         raise SystemExit("env quote parse failed")
     if not pid_alive(os.getpid()):
         raise SystemExit("this process should count as alive")
+    _self_test_turn_busy()
     if os.name == "nt":
         original_kill = os.kill
 
