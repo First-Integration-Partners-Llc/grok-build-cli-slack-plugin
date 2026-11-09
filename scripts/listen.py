@@ -170,15 +170,43 @@ def pid_alive(pid):
         return False
     if pid <= 0:
         return False
+    # os.kill(pid, 0) on Windows is CTRL_C_EVENT. A live grok.exe in another
+    # console returns WinError 87, which is not "process does not exist".
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except PermissionError:
         return True
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 5:
-            return True
+    except OSError:
         return False
     return True
+
+
+def _windows_pid_alive(pid):
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        return code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def active_session_ids():
@@ -609,6 +637,20 @@ def self_test():
         raise SystemExit("env quote parse failed")
     if not pid_alive(os.getpid()):
         raise SystemExit("this process should count as alive")
+    if os.name == "nt":
+        original_kill = os.kill
+
+        def reject_kill(*_args, **_kwargs):
+            raise SystemExit("os.kill must not be used to test a Windows pid")
+
+        os.kill = reject_kill
+        try:
+            if not pid_alive(os.getpid()):
+                raise SystemExit("this process should count as alive without os.kill")
+            if pid_alive(2**31 - 1):
+                raise SystemExit("a missing pid should count as dead")
+        finally:
+            os.kill = original_kill
     _self_test_websocket()
     _self_test_lock()
     print("self-test ok")

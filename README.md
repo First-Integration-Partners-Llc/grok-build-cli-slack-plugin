@@ -255,7 +255,7 @@ One manual `/rename` wins over generated titles with the same key. Two manual ti
 
 ### Delivery
 
-An open session is one whose id is in `~/.grok/active_sessions.json` and whose `pid` is still alive. That file is one object or an array of `{session_id, pid, cwd}`. Access denied on that pid counts as alive. Grok will not open that session a second time, and it will not accept the text into the window that has it. The listener writes `~/.config/grok-build-cli-slack/held/<guid>.json` and replies `That session is open on this desktop. I will deliver this when it is free.`
+An open session is one whose id is in `~/.grok/active_sessions.json` and whose `pid` is still alive. That file is one object or an array of `{session_id, pid, cwd}`. On Windows the check opens the process. `os.kill(pid, 0)` is a Ctrl+C event there, and a live `grok.exe` returns "The parameter is incorrect." Access denied still counts as alive. Grok will not open that session a second time, and it will not accept the text into the window that has it. The listener writes `~/.config/grok-build-cli-slack/held/<guid>.json` and replies `That session is open on this desktop. I will deliver this when it is free.`
 
 Each held file is one message:
 
