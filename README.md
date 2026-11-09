@@ -173,6 +173,108 @@ These check the mention parser without connecting to Slack:
 pwsh -File ./scripts/listen.ps1 -SelfTest
 ```
 
+`python listen.py --self-test` is the same check. It does not call Slack or `grok`.
+
+## Technical reference
+
+Plugin name `grok-slack`, marketplace name `grok-build-cli-slack`, MIT, author First-Integration-Partners-Llc. The name is not `slack`, so it does not replace the official plugin. That official plugin posts as the signed-in user. This one does not. There is no `.mcp.json` and no user token.
+
+Grok Build's own "bring to Slack" app creation is not available to this CLI. Each desktop creates and installs its own Socket Mode app. One app is one bot user. Session titles are mention tags, not extra Slack users.
+
+### Layout
+
+| Path | Role |
+| --- | --- |
+| `.grok-plugin/plugin.json` | Plugin manifest |
+| `.grok-plugin/marketplace.json` | Local marketplace, source `"."` |
+| `hooks/hooks.json` | `SessionStart` hook |
+| `slack-app-manifest.json` | Slack app manifest. `DESKTOP_NAME` is replaced when you print it |
+| `scripts/listen.py` | The listener. Standard library only |
+| `scripts/start_listener.py` | Detaches one listener and exits |
+| `scripts/start_listener.ps1`, `scripts/start_listener.sh` | Hook entry points. PowerShell looks up `python`, then `python3`, then `py -3`. The shell script looks up `python3`, then `python` |
+| `scripts/listen.ps1`, `scripts/listen.macos.sh`, `scripts/listen.linux.sh` | Foreground wrappers around `listen.py` |
+| `scripts/desktop-manifest.ps1`, `scripts/desktop-manifest.sh` | Print the manifest. The shell script needs `python3` |
+| `env/slack.windows.ps1`, `env/slack.macos.sh`, `env/slack.linux.sh` | Store credentials outside this repo |
+| `skills/slack/`, `skills/slack-setup/` | Skills loaded with the plugin |
+
+Hooks run from the installed copy. After you pull, install again:
+
+```bash
+grok plugin install ./grok-build-cli-slack-plugin --trust
+```
+
+`grok plugin update grok-slack` refreshes a local install that Grok is already reading from this checkout. A listener that is already running keeps the process it started in. Stop that process and the next session start launches the updated one. `--trust` is required. Without it the skills and the hook stay inactive.
+
+`SessionStart` runs when a session starts and when a saved session is reopened. It does not run for a subagent session, and compaction does not run it. The session that was already open when you installed the plugin does not run the hook until that session starts again.
+
+### Start hook
+
+`hooks/hooks.json` sets a 15 second timeout. The default is 5. A hook field named `async` is ignored, so the listener cannot be the hook process. The hook command is:
+
+```text
+pwsh -NoProfile -ExecutionPolicy Bypass -File "${GROK_PLUGIN_ROOT}/scripts/start_listener.ps1" 2>/dev/null || powershell -NoProfile -ExecutionPolicy Bypass -File "${GROK_PLUGIN_ROOT}/scripts/start_listener.ps1" 2>/dev/null || sh "${GROK_PLUGIN_ROOT}/scripts/start_listener.sh"
+```
+
+Grok expands `${GROK_PLUGIN_ROOT}` to the installed plugin directory. On Windows it rewrites that variable for PowerShell. The `||` form is valid in `sh` and in PowerShell 7. Grok runs hook commands under PowerShell 7 when `pwsh` is on `PATH`, then Windows PowerShell 5.1, then Git Bash. Windows PowerShell 5.1 does not parse `||`. Install PowerShell 7, or run `scripts/listen.ps1` yourself.
+
+`start_listener.py` loads saved credentials, then probes `~/.config/grok-build-cli-slack/listener.lock` and releases it. A probe that cannot take the lock prints `Slack listener already running.` and exits 0. A missing token, or a token with the wrong prefix, prints `Slack listener not started. Set SLACK_APP_TOKEN and SLACK_BOT_TOKEN.` on stderr and exits 0, so a session still starts before Slack setup is finished. When the probe succeeds and both tokens are present, it starts `listen.py` with the same Python and `-u`, stdin closed, and stdout and stderr appended to `listener.log`, then exits. The parent does not hold the lock. On Windows the child is a detached process in a new process group with no console window. On macOS and Linux it is a new session and does not inherit extra file descriptors.
+
+`listen.py` takes that lock before it opens Slack. The lock is `fcntl` on macOS and Linux, and one locked byte on Windows. The file then contains the listener pid. If the lock is already held, that process prints `Slack listener already running.` and exits 0. Two starters can both pass the probe before either child locks. The second child exits, so only one socket stays up.
+
+The starter scripts exit 1 when no Python is on `PATH`. That failure shows up on the session start. The listener itself does not.
+
+### Credentials
+
+Nothing in this repository is a place to put a token. The env scripts take them as arguments and reject an app token that does not start with `xapp-` or a bot token that does not start with `xoxb-`.
+
+Lookup order when the listener starts:
+
+1. The process environment.
+2. On Windows, the user environment (`HKCU\Environment`), if the process does not already have the variable.
+3. `~/.config/grok-build-cli-slack.env` for any of the three names that are still empty.
+
+The env file is `export KEY='value'` with mode `600`. A single quote inside a value is written as `'\''`. macOS also appends `source` of that file to `~/.zprofile` and calls `launchctl setenv`, which is what a Dock-launched Grok Build sees after you quit and reopen it. Linux appends the same `source` line to `~/.profile`. Windows writes the user environment. A Grok Build process that was already running does not see a user-environment change until it is started again. The listener still reads the registry and the env file itself, so a hook-started process can see them.
+
+`SLACK_APP_TOKEN` is the **Token** field on Basic Information → App-Level Tokens → `desktop-listener`. Scope `connections:write` is an app-level scope. It is not one of the bot OAuth scopes. `authorizations:read` on that same token is fine. Client ID, Client Secret, Signing Secret, and Verification Token are not this value. `SLACK_BOT_TOKEN` is the Bot User OAuth Token from OAuth & Permissions. Reinstalling the app after a scope change replaces `xoxb-` only.
+
+### Socket Mode
+
+`slack-app-manifest.json` sets `socket_mode_enabled` true, `is_hosted` false, `org_deploy_enabled` false, and `token_rotation_enabled` false. The only bot event is `app_mention`. There is no request URL and no user scope. Bot scopes are `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, and `users:read`.
+
+The listener posts `https://slack.com/api/apps.connections.open` with `Authorization: Bearer` and the app token. Slack returns a one-time `wss://` URL. That URL is not written to the log or to a file. The client speaks a small masked WebSocket. It answers ping frames. Any message with `envelope_id` is acknowledged with `{"envelope_id":"..."}` before the mention is handled. A `disconnect` message, a closed socket, or an error closes the socket and waits 5 seconds, then opens a new one. Slack does not queue events for the time the socket is down.
+
+Only `app_mention` is routed. The thread is `thread_ts` when Slack sends one, otherwise `ts`. Replies use `chat.postMessage` with the bot token and that `thread_ts`.
+
+### Mention and session match
+
+The bot mention `<@U...>` is removed. The session tag is the first `#name` or the first channel link `<#C...|name>`. Only that span is removed, so a later `#other` stays in the prompt. A mention with no tag is answered with `Add a session tag, for example #server-admin, then the request.` A tag with an empty request is answered with `Add the request after #<tag>.`
+
+Titles come from `~/.grok/sessions/**/summary.json`: `generated_title`, `title_is_manual`, `info.id`, and `info.cwd`. The title string is `generated_title` even when `/rename` set it. A row with no title or no id is skipped. Matching lowercases the text and turns every run of non-alphanumeric characters into a single space, so `#fix-login-bug` matches `Fix login bug`.
+
+One manual `/rename` wins over generated titles with the same key. Two manual titles with that key are ambiguous. With no manual title, one generated match is used, and two are ambiguous. An ambiguous reply does not pick one. It posts `More than one session matches. Rename one so the title is unique.` and then one line per match, `title — cwd`. No match posts `No session on this desktop is named <tag>.` The tag text is used as stored, without an extra `#`.
+
+### Delivery
+
+An open session is one whose id is in `~/.grok/active_sessions.json` and whose `pid` is still alive. That file is one object or an array of `{session_id, pid, cwd}`. Access denied on that pid counts as alive. Grok will not open that session a second time, and it will not accept the text into the window that has it. The listener writes `~/.config/grok-build-cli-slack/held/<guid>.json` and replies `That session is open on this desktop. I will deliver this when it is free.`
+
+Each held file is one message:
+
+```json
+{"session_id": "", "channel": "", "thread_ts": "", "prompt": ""}
+```
+
+The prompt stored there, and the prompt passed to Grok, is the Slack text prefixed with `From Slack:` and a newline.
+
+A session that is not open is resumed in the background:
+
+```text
+grok --cwd <session cwd> -r <session id> -p <prompt> --output-format plain
+```
+
+The socket loop does not wait for that process. Delivery runs on a daemon thread, and a session id already in that set is not started again. If the exit code is not 0, or the output contains `has it open` or `not sent`, the held file is written again and the hold sentence is posted. Otherwise the held file is deleted and the thread gets `Delivered to <title>.` Held files are scanned when the socket connects and on every 15 seconds of idle. A session that already has a delivery thread running is skipped in that scan, and its held file stays until that delivery finishes. A new mention for that same session, while it is not listed as open, is not written to a held file.
+
+`not_in_channel` means the bot has not been invited. A failed `chat.postMessage` on the socket thread is logged and the socket reconnects. A failure inside a delivery thread is logged as `Delivery error` and does not reconnect the socket. The listener does not post as your user.
+
 ## License
 
 MIT. See `LICENSE`.
