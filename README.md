@@ -134,6 +134,16 @@ In each channel it should hear, run:
 
 Use the display name Slack shows if it shortened the one you chose. A mention in a channel the bot has not joined does not arrive.
 
+## Run the listener
+
+Leave this running on the desktop. It connects with `SLACK_APP_TOKEN` and posts with `SLACK_BOT_TOKEN`. A mention `@your-bot #session-title` followed by the request is delivered to that session. A session that is already open is delivered after it closes.
+
+```powershell
+pwsh -File ./scripts/listen.ps1
+```
+
+`pwsh -File ./scripts/listen.ps1 -SelfTest` checks the mention parser without connecting to Slack.
+
 ## License
 
 MIT. See `LICENSE`.

@@ -7,7 +7,7 @@ description: Speak in Slack as this desktop's Grok Build bot, and route an @ment
 
 Post with this desktop's bot token. The name in the channel is the name chosen at connect time. Do not post as the signed-in user.
 
-An incoming mention addressed to this bot is routed only when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt.
+The desktop listener is `scripts/listen.ps1`. It must be running. An incoming mention addressed to this bot is routed only when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt.
 
 Submit that prompt to a session that is not open. If the session is already open in a Grok window, hold the message, say so in the Slack thread, and deliver it when the session is free. If two sessions share the title, list their directories in the thread and wait.
 
