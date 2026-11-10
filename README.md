@@ -35,13 +35,25 @@ A session that is in the middle of a reply is left alone. The listener holds the
 
 Socket Mode apps cannot be listed in the Slack Marketplace. Create this one in your own workspace. On Enterprise Grid it can be deployed to the org, and it still is not a Marketplace app.
 
-### 1. Install the plugin
+### 1. Install the plugin and its skill
 
 From a checkout of this repo:
 
 ```bash
 grok plugin install ./grok-build-cli-slack-plugin --trust
 ```
+
+`--trust` is the step that adds this plugin to Grok Build. It turns on the listener hook and these skills:
+
+| Skill | What it is for |
+| --- | --- |
+| `grok-build-cli-slack-plugin` | The session that receives a mention posts the answer back in that Slack thread |
+| `slack` | Speak as this desktop's bot |
+| `slack-setup` | Choose the bot name, save the tokens, and invite the bot |
+
+Start a new Grok Build session after the install. The session that was already open does not load the new skill. In that new session the slash command is `/grok-build-cli-slack-plugin`. If another skill has the same name, Grok shows `/grok-slack:grok-build-cli-slack-plugin`.
+
+Without `--trust`, Grok stops before the skill and the hook are active. A mention can still reach a session, and the session will not know to answer in Slack. `Delivered to <title>.` is only the routing receipt.
 
 Turn off the other plugin named `slack`. That one posts as the signed-in user.
 
@@ -195,6 +207,7 @@ Grok Build's own "bring to Slack" app creation is not available to this CLI. Eac
 | `scripts/listen.ps1`, `scripts/listen.macos.sh`, `scripts/listen.linux.sh` | Foreground wrappers around `listen.py` |
 | `scripts/desktop-manifest.ps1`, `scripts/desktop-manifest.sh` | Print the manifest. The shell script needs `python3` |
 | `env/slack.windows.ps1`, `env/slack.macos.sh`, `env/slack.linux.sh` | Store credentials outside this repo |
+| `skills/grok-build-cli-slack-plugin/` | Skill that posts the session's answer back in the Slack thread |
 | `skills/slack/`, `skills/slack-setup/` | Skills loaded with the plugin |
 
 Hooks run from the installed copy. After you pull, install again:
@@ -263,7 +276,7 @@ Each held file is one message:
 {"session_id": "", "channel": "", "thread_ts": "", "prompt": ""}
 ```
 
-The prompt stored there, and the prompt passed to Grok, is the Slack text prefixed with `From Slack:` and a newline.
+The prompt stored there, and the prompt passed to Grok, starts with `From Slack:`, then `channel:` and `thread_ts:`, then a blank line and the Slack text. The session posts its answer back to that thread. The listener's `Delivered to <title>.` is only the routing receipt.
 
 A waiting session, open or closed, is given the prompt in the background:
 

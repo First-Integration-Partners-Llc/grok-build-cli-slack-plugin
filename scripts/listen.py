@@ -544,6 +544,10 @@ def event_from(message):
     return event or {}
 
 
+def slack_prompt(channel, thread, text):
+    return "From Slack:\nchannel: {0}\nthread_ts: {1}\n\n{2}".format(channel, thread, text)
+
+
 def handle_mention(bot_token, event):
     thread = event.get("thread_ts") or event.get("ts") or ""
     channel = event.get("channel") or ""
@@ -568,7 +572,7 @@ def handle_mention(bot_token, event):
         )
         return
     session = resolved["session"]
-    prompt = "From Slack:\n{0}".format(request["prompt"])
+    prompt = slack_prompt(channel, thread, request["prompt"])
     if session["id"] in active_session_ids() and session_turn_busy(session.get("dir") or ""):
         save_held(session["id"], channel, thread, prompt)
         post_slack(bot_token, channel, thread, HOLD_REPLY)
@@ -717,6 +721,9 @@ def self_test():
     quoted = shell_single_quoted("'xapp-a'\\''b'")
     if quoted != "xapp-a'b":
         raise SystemExit("env quote parse failed")
+    prompt = slack_prompt("C0123", "123.456", "hello")
+    if prompt != "From Slack:\nchannel: C0123\nthread_ts: 123.456\n\nhello":
+        raise SystemExit("slack prompt header failed")
     if not pid_alive(os.getpid()):
         raise SystemExit("this process should count as alive")
     _self_test_turn_busy()

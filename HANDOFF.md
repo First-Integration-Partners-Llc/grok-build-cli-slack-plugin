@@ -14,7 +14,7 @@ One Slack bot per Grok Build desktop. The person chooses the name at connect tim
 
 A mention is `@desktop-name #session-title` plus the request. `#name` may be plain text or a Slack channel link `<#C…|name>`. Only the first tag is the session. A later `#other` stays in the prompt. A manual `/rename` wins over `generated_title`. Two sessions with the same title get a thread reply that lists `title — cwd`. The listener does not guess.
 
-The prompt given to Grok is the Slack text prefixed with `From Slack:` and a newline.
+The prompt given to Grok starts with `From Slack:`, then `channel:` and `thread_ts:`, then the Slack text. The session skill `skills/grok-build-cli-slack-plugin/SKILL.md` posts the answer in that thread as the desktop bot. `Delivered to <title>.` is only the routing receipt.
 
 ## Current code
 
