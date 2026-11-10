@@ -14,7 +14,9 @@ One Slack bot per Grok Build desktop. The person chooses the name at connect tim
 
 A mention is `@desktop-name #session-title` plus the request. `#name` may be plain text or a Slack channel link `<#C…|name>`. Only the first tag is the session. A later `#other` stays in the prompt. A manual `/rename` wins over `generated_title`. Two sessions with the same title get a thread reply that lists `title — cwd`. The listener does not guess.
 
-The prompt given to Grok starts with `From Slack:`, then `channel:` and `thread_ts:`, then the Slack text. The session skill `skills/grok-build-cli-slack-plugin/SKILL.md` posts the answer in that thread as the desktop bot. `Delivered to <title>.` is only the routing receipt.
+The prompt given to Grok starts with `From Slack:`, then `channel:` and `thread_ts:`, then the Slack text. The session posts `From @<bot> #<session> <answer>` in that thread. `:inbox_tray:` on the originating message is the routing receipt.
+
+One listener per Grok CLI runtime. A renamed session is not in a channel until `@<bot> #<session> join` is posted there. `@here` delivers to those sessions on this runtime, except the session named on that line. Subscriptions are `~/.config/grok-build-cli-slack/subscriptions.json`. Bare `@here` needs the Slack app events `message.channels` and `message.groups`.
 
 ## Current code
 
@@ -48,7 +50,7 @@ Held files are scanned when the socket connects and every 15 seconds after that.
 
 On Windows, `os.kill(pid, 0)` is Ctrl+C and returns WinError 87 for a live `grok.exe`. That is not a dead process. `pid_alive` uses `OpenProcess`. Access denied still counts as alive. `active_sessions.json` is one object or an array of `{session_id, pid, cwd}`.
 
-If `grok` exits non-zero, or its output contains `has it open` or `not sent`, write the held file again and post the hold sentence. Otherwise delete the held file and post `Delivered to <title>.`
+If `grok` exits non-zero, or its output contains `has it open` or `not sent`, write the held file again and post the hold sentence. Otherwise delete the held file. The originating message already has `:inbox_tray:`.
 
 `not_in_channel` means the bot is not in the channel. A failed `chat.postMessage` on the socket thread reconnects the socket. A failure inside a delivery thread is logged as `Delivery error` and does not reconnect. Do not post as the user to get around either case.
 

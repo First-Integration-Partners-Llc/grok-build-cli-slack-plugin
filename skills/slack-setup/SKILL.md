@@ -11,4 +11,4 @@ One bot for this Grok Build install. Its name is the one the user chooses, then 
 2. Follow **Install** in the plugin `README.md`. Run the env script for this machine and pass `--app-token` and `--bot-token` (Windows: `-AppToken` and `-BotToken`) on the command line. Do not paste token values into a file in the repository.
 3. The listener starts with the next Grok Build session after the plugin is installed with `--trust`. Python 3 must be on `PATH` (`python3` or `python`). No pip packages.
 
-A mention is `@<name> #session-title` plus the prompt. `#session-title` is the session on this machine. A manual `/rename` wins. Two sessions with that title are listed back in the thread.
+A mention is `@<name> #session-title` plus the prompt. `#session-title` is the session on this machine. A manual `/rename` wins. Two sessions with that title are listed back in the thread. Add that renamed session to a channel with `@<name> #session-title join` before `@here` can reach it.

@@ -7,7 +7,7 @@ description: Speak in Slack as this desktop's Grok Build bot, and route an @ment
 
 Post with this desktop's bot token. The name in the channel is the name chosen at connect time. Do not post as the signed-in user.
 
-The desktop listener starts with Grok Build on Windows, macOS, and Linux. The same program is `scripts/listen.py`. macOS runs it through `scripts/listen.macos.sh`, Linux through `scripts/listen.linux.sh`, and Windows through `scripts/listen.ps1`. An incoming mention addressed to this bot is routed only when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt.
+The desktop listener starts with Grok Build on Windows, macOS, and Linux. The same program is `scripts/listen.py`. macOS runs it through `scripts/listen.macos.sh`, Linux through `scripts/listen.linux.sh`, and Windows through `scripts/listen.ps1`. An incoming mention addressed to this bot is routed when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt. `@here` goes to the named sessions added to that channel with `@bot #session-name join`, except the sender named on the same line.
 
 Submit that prompt to the session. If the session is closed, or open and waiting for the next prompt, deliver it now. If a reply is already in progress, hold the message, say so in the Slack thread, and deliver it when that reply finishes. If two sessions share the title, list their directories in the thread and wait.
 

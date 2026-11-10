@@ -20,19 +20,26 @@ import time
 import uuid
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 IDLE = object()
 CLOSED = object()
 MENTION = re.compile(r"<#[A-Z0-9]+\|([^>]+)>|#([^\s#<>]+)")
 USER_MENTION = re.compile(r"<@[A-Z0-9]+>")
+HERE_MENTION = re.compile(r"<!here(?:\|[^>]*)?>", re.IGNORECASE)
+FROM_SELF = re.compile(
+    r"^\s*From\s+@\S+\s+(?:<#[A-Z0-9]+\|([^>]+)>|#([^\s#<>]+))",
+    re.IGNORECASE,
+)
 BLOCKED_DELIVERY = re.compile(r"has it open|not sent", re.IGNORECASE)
 HOLD_REPLY = "That session is busy on this desktop. I will deliver this when it is free."
 _LOCK_HANDLE = None
 _BUSY = set()
 _BUSY_LOCK = threading.Lock()
 _HELD_WAITING = set()
+_SEEN = set()
+_BOT_USER = ""
 
 
 def state_dir():
@@ -123,6 +130,71 @@ def mention_request(text):
     rest = source[:chosen.start()] + source[chosen.end():]
     rest = re.sub(r"\s+", " ", rest).strip()
     return {"tag": tag, "prompt": rest}
+
+
+def contains_here(text):
+    return HERE_MENTION.search(text or "") is not None
+
+
+def here_broadcast(text):
+    # A From @bot #session line names the sender. That session is excluded.
+    # A bare @here keeps every #word in the prompt.
+    source = USER_MENTION.sub(" ", text or "")
+    source = HERE_MENTION.sub(" ", source)
+    found = FROM_SELF.match(source)
+    self_tag = None
+    if found:
+        self_tag = found.group(1) or found.group(2)
+        source = source[found.end():]
+    prompt = re.sub(r"\s+", " ", source).strip()
+    return self_tag, prompt
+
+
+def subscriptions_path():
+    return state_dir() / "subscriptions.json"
+
+
+def load_subscriptions(path=None):
+    target = Path(path) if path else subscriptions_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_subscriptions(data, path=None):
+    target = Path(path) if path else subscriptions_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def channel_titles(channel, path=None):
+    rows = load_subscriptions(path).get(channel) or []
+    return [str(item) for item in rows if str(item).strip()]
+
+
+def subscribe_title(channel, title, path=None):
+    data = load_subscriptions(path)
+    titles = [str(item) for item in (data.get(channel) or [])]
+    key = title_key(title)
+    if not any(title_key(item) == key for item in titles):
+        titles.append(title)
+    data[channel] = titles
+    save_subscriptions(data, path)
+
+
+def unsubscribe_title(channel, title, path=None):
+    data = load_subscriptions(path)
+    key = title_key(title)
+    kept = [str(item) for item in (data.get(channel) or []) if title_key(item) != key]
+    if kept:
+        data[channel] = kept
+    else:
+        data.pop(channel, None)
+    save_subscriptions(data, path)
 
 
 def grok_sessions():
@@ -331,12 +403,9 @@ def start_delivery(bot_token, session, channel, thread_ts, prompt, held_path=Non
             blocked = completed.returncode != 0 or BLOCKED_DELIVERY.search(output)
             if blocked:
                 save_held(session["id"], channel, thread_ts, prompt, target)
-                text = HOLD_REPLY
-            else:
-                if target.exists():
-                    target.unlink()
-                text = "Delivered to {0}.".format(session["title"])
-            post_slack(bot_token, channel, thread_ts, text)
+                post_slack(bot_token, channel, thread_ts, HOLD_REPLY)
+            elif target.exists():
+                target.unlink()
         except Exception as exc:
             print("Delivery error: {0}".format(exc), flush=True)
         finally:
@@ -548,6 +617,137 @@ def slack_prompt(channel, thread, text):
     return "From Slack:\nchannel: {0}\nthread_ts: {1}\n\n{2}".format(channel, thread, text)
 
 
+def slack_api(bot_token, method, params, as_json=False):
+    if as_json:
+        data = json.dumps(params).encode("utf-8")
+        content_type = "application/json; charset=utf-8"
+    else:
+        data = urlencode(params).encode("utf-8")
+        content_type = "application/x-www-form-urlencoded"
+    request = urllib.request.Request(
+        "https://slack.com/api/" + method,
+        data=data,
+        headers={
+            "Authorization": "Bearer " + bot_token,
+            "Content-Type": content_type,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = json.loads(response.read().decode("utf-8"))
+    if not body.get("ok"):
+        raise RuntimeError(body.get("error") or method)
+    return body
+
+
+def bot_user_id(bot_token):
+    global _BOT_USER
+    if _BOT_USER:
+        return _BOT_USER
+    _BOT_USER = str(slack_api(bot_token, "auth.test", {}, as_json=True).get("user_id") or "")
+    return _BOT_USER
+
+
+def add_inbox(bot_token, channel, timestamp):
+    if not channel or not timestamp:
+        return
+    try:
+        slack_api(bot_token, "reactions.add", {
+            "channel": channel,
+            "name": "inbox_tray",
+            "timestamp": timestamp,
+        })
+    except RuntimeError as exc:
+        if "already_reacted" not in str(exc):
+            print("Inbox reaction failed: {0}".format(exc), flush=True)
+
+
+def bot_in_channel(bot_token, channel):
+    ours = bot_user_id(bot_token)
+    cursor = ""
+    while True:
+        params = {"channel": channel, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        body = slack_api(bot_token, "conversations.members", params)
+        if ours and ours in (body.get("members") or []):
+            return True
+        cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+        if not cursor:
+            return False
+
+
+def remember_message(channel, timestamp):
+    if not channel or not timestamp:
+        return False
+    key = (channel, timestamp)
+    if key in _SEEN:
+        return True
+    _SEEN.add(key)
+    if len(_SEEN) > 500:
+        _SEEN.clear()
+        _SEEN.add(key)
+    return False
+
+
+def deliver_to_session(bot_token, session, channel, thread, prompt):
+    if session["id"] in active_session_ids() and session_turn_busy(session.get("dir") or ""):
+        save_held(session["id"], channel, thread, prompt)
+        post_slack(bot_token, channel, thread, HOLD_REPLY)
+        return
+    print("Delivering to {0}.".format(session["title"]), flush=True)
+    start_delivery(bot_token, session, channel, thread, prompt)
+
+
+def handle_join(bot_token, channel, thread, session, leaving):
+    if not session.get("manual"):
+        post_slack(bot_token, channel, thread, "Rename that session with /rename before adding it to a channel.")
+        return
+    if leaving:
+        unsubscribe_title(channel, session["title"])
+        post_slack(bot_token, channel, thread, "{0} left this channel.".format(session["title"]))
+        return
+    subscribe_title(channel, session["title"])
+    post_slack(bot_token, channel, thread, "{0} is in this channel.".format(session["title"]))
+
+
+def handle_here(bot_token, event):
+    channel = event.get("channel") or ""
+    thread = event.get("thread_ts") or event.get("ts") or ""
+    if not bot_in_channel(bot_token, channel):
+        return
+    self_tag, prompt = here_broadcast(event.get("text") or "")
+    if not prompt:
+        post_slack(bot_token, channel, thread, "Add the message after @here.")
+        return
+    self_key = title_key(self_tag or "")
+    titles = channel_titles(channel)
+    if not titles:
+        post_slack(
+            bot_token,
+            channel,
+            thread,
+            "No named session is in this channel. Add one with @bot #session-name join.",
+        )
+        return
+    delivered = False
+    for title in titles:
+        if self_key and title_key(title) == self_key:
+            continue
+        resolved = resolve_session(title, grok_sessions())
+        if resolved["status"] != "one":
+            continue
+        session = resolved["session"]
+        if not session.get("manual"):
+            continue
+        deliver_to_session(bot_token, session, channel, thread, slack_prompt(channel, thread, prompt))
+        delivered = True
+    if delivered:
+        add_inbox(bot_token, channel, event.get("ts") or "")
+        return
+    post_slack(bot_token, channel, thread, "No other named session is in this channel.")
+
+
 def handle_mention(bot_token, event):
     thread = event.get("thread_ts") or event.get("ts") or ""
     channel = event.get("channel") or ""
@@ -557,6 +757,23 @@ def handle_mention(bot_token, event):
         return
     if not request["prompt"]:
         post_slack(bot_token, channel, thread, "Add the request after #{0}.".format(request["tag"]))
+        return
+    command = request["prompt"].lower()
+    if command in ("join", "leave"):
+        resolved = resolve_session(request["tag"], grok_sessions())
+        if resolved["status"] == "none":
+            post_slack(bot_token, channel, thread, "No session on this desktop is named {0}.".format(request["tag"]))
+            return
+        if resolved["status"] == "many":
+            lines = ["{0} — {1}".format(row["title"], row["cwd"]) for row in resolved["sessions"]]
+            post_slack(
+                bot_token,
+                channel,
+                thread,
+                "More than one session matches. Rename one so the title is unique.\n" + "\n".join(lines),
+            )
+            return
+        handle_join(bot_token, channel, thread, resolved["session"], command == "leave")
         return
     resolved = resolve_session(request["tag"], grok_sessions())
     if resolved["status"] == "none":
@@ -573,12 +790,34 @@ def handle_mention(bot_token, event):
         return
     session = resolved["session"]
     prompt = slack_prompt(channel, thread, request["prompt"])
-    if session["id"] in active_session_ids() and session_turn_busy(session.get("dir") or ""):
-        save_held(session["id"], channel, thread, prompt)
-        post_slack(bot_token, channel, thread, HOLD_REPLY)
+    deliver_to_session(bot_token, session, channel, thread, prompt)
+    add_inbox(bot_token, channel, event.get("ts") or "")
+
+
+def handle_slack_event(bot_token, event):
+    kind = event.get("type") or ""
+    if kind not in ("app_mention", "message"):
         return
-    print("Delivering to {0}.".format(session["title"]), flush=True)
-    start_delivery(bot_token, session, channel, thread, prompt)
+    if event.get("subtype"):
+        return
+    text = event.get("text") or ""
+    channel = event.get("channel") or ""
+    timestamp = event.get("ts") or ""
+    if remember_message(channel, timestamp):
+        return
+    if contains_here(text):
+        handle_here(bot_token, event)
+        return
+    if event.get("bot_id"):
+        return
+    try:
+        if event.get("user") and event.get("user") == bot_user_id(bot_token):
+            return
+    except RuntimeError as exc:
+        print("Bot identity failed: {0}".format(exc), flush=True)
+    if kind != "app_mention" and not USER_MENTION.search(text):
+        return
+    handle_mention(bot_token, event)
 
 
 def _lock_file(directory):
@@ -666,9 +905,7 @@ def run_listener(app_token, bot_token):
                     print("Slack asked the socket to reconnect.", flush=True)
                     break
                 event = event_from(message)
-                if event.get("type") != "app_mention":
-                    continue
-                handle_mention(bot_token, event)
+                handle_slack_event(bot_token, event)
         except Exception as exc:
             print("Listener error: {0}".format(exc), flush=True)
         finally:
@@ -706,6 +943,24 @@ def self_test():
         raise SystemExit("only the session tag should be removed")
     if mention_request("<@U123> hello there"):
         raise SystemExit("a mention without a session tag should not route")
+    if not contains_here("<!here> look"):
+        raise SystemExit("@here should be recognized")
+    self_tag, body = here_broadcast("From @grokcli-menashedesk #server-admin <!here> hello")
+    if self_tag != "server-admin" or body != "hello":
+        raise SystemExit("@here from a session should exclude that session")
+    self_tag, body = here_broadcast("<!here> see #other")
+    if self_tag is not None or body != "see #other":
+        raise SystemExit("a bare @here should keep later tags")
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        sub = Path(directory) / "subscriptions.json"
+        subscribe_title("C1", "server-admin", sub)
+        subscribe_title("C1", "Server Admin", sub)
+        if channel_titles("C1", sub) != ["server-admin"]:
+            raise SystemExit("join should keep one title")
+        unsubscribe_title("C1", "server-admin", sub)
+        if channel_titles("C1", sub):
+            raise SystemExit("leave should remove the title")
     one = resolve_session("fix-login-bug", [
         {"id": "a", "title": "Fix login bug", "key": title_key("Fix login bug"), "manual": True, "cwd": "D:\\one"},
         {"id": "b", "title": "Fix login bug", "key": title_key("fix-login-bug"), "manual": False, "cwd": "D:\\two"},

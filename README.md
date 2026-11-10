@@ -25,6 +25,19 @@ Slack also uses `#name` for a channel link. The listener accepts that form and t
 
 Session titles are matched on this machine. A manual `/rename` wins over the generated title. Two sessions with the same title get a reply in the thread listing their directories. The listener does not pick one.
 
+The session answers in that thread as plain text, so the bot is not mentioned again:
+
+```text
+From @grokbuildcli-desktop #fix-login-bug the token refresh is in auth.py
+```
+
+`@here` goes to every named session that was added to that channel, except the session named on the same line. It does not replace between-bot messaging. Use it when the exchange should stay in the channel:
+
+```text
+@here look at the token refresh
+From @grokbuildcli-desktop #fix-login-bug @here the refresh is in auth.py
+```
+
 ## Delivery
 
 A session that is closed, or open and waiting for the next prompt, is given the Slack text as its prompt.
@@ -53,7 +66,7 @@ grok plugin install ./grok-build-cli-slack-plugin --trust
 
 Start a new Grok Build session after the install. The session that was already open does not load the new skill. In that new session the slash command is `/grok-build-cli-slack-plugin`. If another skill has the same name, Grok shows `/grok-slack:grok-build-cli-slack-plugin`.
 
-Without `--trust`, Grok stops before the skill and the hook are active. A mention can still reach a session, and the session will not know to answer in Slack. `Delivered to <title>.` is only the routing receipt.
+Without `--trust`, Grok stops before the skill and the hook are active. A mention can still reach a session, and the session will not know to answer in Slack. The listener marks the originating message with `:inbox_tray:`. That reaction is the routing receipt, not the answer.
 
 Turn off the other plugin named `slack`. That one posts as the signed-in user.
 
@@ -146,9 +159,19 @@ In each channel it should hear, run:
 
 Use the display name Slack shows if it shortened the one you chose. A mention in a channel the bot has not joined does not arrive.
 
+### 6. Add each named session to a channel
+
+A session is not a Slack member. Rename it with `/rename` first. Then, in that channel:
+
+```text
+@grokbuildcli-desktop #fix-login-bug join
+```
+
+`leave` removes it. `@here` is delivered only to sessions added on this runtime. Add the same session on each Grok CLI install that should hear that channel.
+
 ## Listener
 
-Installing the plugin with `--trust` registers a `SessionStart` hook. The next time Grok Build starts, or reopens a saved session, that hook starts the listener and returns. One listener runs per machine. A second session sees that it is already running.
+Installing the plugin with `--trust` registers a `SessionStart` hook. The next time Grok Build starts, or reopens a saved session, that hook starts the listener and returns. One listener runs per Grok CLI runtime, the container or machine where that CLI is running. A second session in that runtime sees that it is already running.
 
 The hook needs `python3` or `python` on `PATH`. Nothing is installed from pip. On Windows the hook command uses `||`, which PowerShell 7 understands. Grok uses PowerShell 7 when `pwsh` is installed. Windows PowerShell 5.1 does not understand `||`; install PowerShell 7, or start the listener yourself with the script below.
 
@@ -252,11 +275,11 @@ The env file is `export KEY='value'` with mode `600`. A single quote inside a va
 
 ### Socket Mode
 
-`slack-app-manifest.json` sets `socket_mode_enabled` true, `is_hosted` false, `org_deploy_enabled` false, and `token_rotation_enabled` false. The only bot event is `app_mention`. There is no request URL and no user scope. Bot scopes are `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, and `users:read`.
+`slack-app-manifest.json` sets `socket_mode_enabled` true, `is_hosted` false, `org_deploy_enabled` false, and `token_rotation_enabled` false. Bot events are `app_mention`, `message.channels`, and `message.groups`. There is no request URL and no user scope. Bot scopes are `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, and `users:read`. An app created before `message.channels` and `message.groups` were added does not see a bare `@here` until those events are saved in Slack. `@bot #session join` still arrives as `app_mention`.
 
 The listener posts `https://slack.com/api/apps.connections.open` with `Authorization: Bearer` and the app token. Slack returns a one-time `wss://` URL. That URL is not written to the log or to a file. The client speaks a small masked WebSocket. It answers ping frames. Any message with `envelope_id` is acknowledged with `{"envelope_id":"..."}` before the mention is handled. A `disconnect` message, a closed socket, or an error closes the socket and waits 5 seconds, then opens a new one. Slack does not queue events for the time the socket is down.
 
-Only `app_mention` is routed. The thread is `thread_ts` when Slack sends one, otherwise `ts`. Replies use `chat.postMessage` with the bot token and that `thread_ts`.
+`app_mention` routes `@bot #session`. A message that contains `<!here>` routes to the named sessions stored for that channel in `~/.config/grok-build-cli-slack/subscriptions.json`, except the session on a `From @bot #session` line. A message from this bot is ignored unless it contains `<!here>`. The thread is `thread_ts` when Slack sends one, otherwise `ts`. Replies use `chat.postMessage` with the bot token and that `thread_ts`. An accepted message gets `reactions.add` with `inbox_tray` on the originating `ts`.
 
 ### Mention and session match
 
@@ -276,7 +299,7 @@ Each held file is one message:
 {"session_id": "", "channel": "", "thread_ts": "", "prompt": ""}
 ```
 
-The prompt stored there, and the prompt passed to Grok, starts with `From Slack:`, then `channel:` and `thread_ts:`, then a blank line and the Slack text. The session posts its answer back to that thread. The listener's `Delivered to <title>.` is only the routing receipt.
+The prompt stored there, and the prompt passed to Grok, starts with `From Slack:`, then `channel:` and `thread_ts:`, then a blank line and the Slack text. The session posts its answer back in that thread as `From @<bot> #<session> <answer>`. The listener puts `:inbox_tray:` on the originating message. That reaction is the routing receipt.
 
 A waiting session, open or closed, is given the prompt in the background:
 
@@ -284,7 +307,7 @@ A waiting session, open or closed, is given the prompt in the background:
 grok --cwd <session cwd> -r <session id> -p <prompt> --output-format plain
 ```
 
-The socket loop does not wait for that process. Delivery runs on a daemon thread, and a session id already in that set is not started again. If the exit code is not 0, or the output contains `has it open` or `not sent`, the held file is written again and the hold sentence is posted. Otherwise the held file is deleted and the thread gets `Delivered to <title>.` Held files are scanned when the socket connects and every 15 seconds after that. Slack ping frames do not postpone that scan. A session that is still mid-reply, or that already has a delivery thread running, is skipped in that scan, and its held file stays until that delivery finishes. A new mention that arrives while a delivery thread is already running for that session is not written to a held file.
+The socket loop does not wait for that process. Delivery runs on a daemon thread, and a session id already in that set is not started again. If the exit code is not 0, or the output contains `has it open` or `not sent`, the held file is written again and the hold sentence is posted. Otherwise the held file is deleted. Held files are scanned when the socket connects and every 15 seconds after that. Slack ping frames do not postpone that scan. A session that is still mid-reply, or that already has a delivery thread running, is skipped in that scan, and its held file stays until that delivery finishes. A new mention that arrives while a delivery thread is already running for that session is not written to a held file.
 
 `not_in_channel` means the bot has not been invited. A failed `chat.postMessage` on the socket thread is logged and the socket reconnects. A failure inside a delivery thread is logged as `Delivery error` and does not reconnect the socket. The listener does not post as your user.
 

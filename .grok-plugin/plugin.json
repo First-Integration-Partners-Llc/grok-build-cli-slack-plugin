@@ -1,6 +1,6 @@
 {
   "name": "grok-slack",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "One Slack bot per Grok Build CLI desktop on Windows, macOS, and Linux. The listener starts when the CLI starts. A mention with #session-title is delivered to that session, and the grok-build-cli-slack-plugin skill posts the answer back in that Slack thread.",
   "author": {
     "name": "First-Integration-Partners-Llc"
