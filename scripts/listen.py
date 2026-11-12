@@ -39,7 +39,11 @@ _BUSY = set()
 _BUSY_LOCK = threading.Lock()
 _HELD_WAITING = set()
 _SEEN = set()
+_REPLAY_LOCK = threading.Lock()
+_SOCKET_GEN = 0
+_SOCKET_OK = False
 _BOT_USER = ""
+_BOT_ID = ""
 
 
 def state_dir():
@@ -382,14 +386,37 @@ def delivery_busy(session_id):
         return session_id in _BUSY
 
 
-def start_delivery(bot_token, session, channel, thread_ts, prompt, held_path=None):
+def public_error(exc):
+    text = str(exc).replace("\n", " ")
+    text = re.sub(r"xox[baprs]-[A-Za-z0-9-]+", "[redacted]", text)
+    text = re.sub(r"wss://\S+", "[socket]", text)
+    if len(text) > 300:
+        text = text[:300]
+    return text
+
+
+def plan_delivery(resolved_status, is_active, turn_busy, delivering):
+    if resolved_status != "one":
+        return resolved_status
+    if (is_active and turn_busy) or delivering:
+        return "hold"
+    return "deliver"
+
+
+def hold_mention(bot_token, session, channel, thread_ts, prompt):
+    save_held(session["id"], channel, thread_ts, prompt)
+    print("Holding mention for {0}.".format(session["title"]), flush=True)
+    post_slack(bot_token, channel, thread_ts, HOLD_REPLY)
+
+
+def start_delivery(bot_token, session, channel, thread_ts, prompt, held_path=None, announce=True):
     grok = shutil.which("grok")
     if not grok:
         raise RuntimeError("grok is not on PATH.")
     target = Path(held_path) if held_path else held_dir() / f"{uuid.uuid4()}.json"
     with _BUSY_LOCK:
         if session["id"] in _BUSY:
-            return
+            return False
         _BUSY.add(session["id"])
 
     def run():
@@ -403,16 +430,39 @@ def start_delivery(bot_token, session, channel, thread_ts, prompt, held_path=Non
             blocked = completed.returncode != 0 or BLOCKED_DELIVERY.search(output)
             if blocked:
                 save_held(session["id"], channel, thread_ts, prompt, target)
-                post_slack(bot_token, channel, thread_ts, HOLD_REPLY)
+                print("Holding mention for {0}.".format(session["title"]), flush=True)
+                if announce:
+                    post_slack(bot_token, channel, thread_ts, HOLD_REPLY)
             elif target.exists():
                 target.unlink()
         except Exception as exc:
-            print("Delivery error: {0}".format(exc), flush=True)
+            reason = public_error(exc)
+            print("Delivery failed for {0}: {1}".format(session["title"], reason), flush=True)
+            try:
+                save_held(session["id"], channel, thread_ts, prompt, target)
+            except OSError:
+                pass
+            if announce:
+                try:
+                    post_slack(
+                        bot_token,
+                        channel,
+                        thread_ts,
+                        "Could not deliver this mention to {0}. {1}".format(session["title"], reason),
+                    )
+                except Exception as post_exc:
+                    print(
+                        "Delivery failed for {0}: could not post the failure: {1}".format(
+                            session["title"], public_error(post_exc)
+                        ),
+                        flush=True,
+                    )
         finally:
             with _BUSY_LOCK:
                 _BUSY.discard(session["id"])
 
     threading.Thread(target=run, daemon=True).start()
+    return True
 
 
 def deliver_held(bot_token):
@@ -435,19 +485,21 @@ def deliver_held(bot_token):
                 first = key not in _HELD_WAITING
                 _HELD_WAITING.add(key)
             if first:
-                print("Holding mention for {0} until the reply finishes.".format(session["title"]), flush=True)
+                print("Holding mention for {0}.".format(session["title"]), flush=True)
             continue
         with _BUSY_LOCK:
             _HELD_WAITING.discard(str(path))
-        print("Delivering held mention to {0}.".format(session["title"]), flush=True)
-        start_delivery(
+        print("Delivering to {0}.".format(session["title"]), flush=True)
+        if not start_delivery(
             bot_token,
             session,
             held.get("channel") or "",
             held.get("thread_ts") or "",
             held.get("prompt") or "",
             path,
-        )
+            announce=False,
+        ):
+            print("Holding mention for {0}.".format(session["title"]), flush=True)
 
 
 def open_socket_url(app_token):
@@ -640,12 +692,44 @@ def slack_api(bot_token, method, params, as_json=False):
     return body
 
 
+def bot_identity(bot_token):
+    global _BOT_USER, _BOT_ID
+    if _BOT_USER or _BOT_ID:
+        return _BOT_USER, _BOT_ID
+    body = slack_api(bot_token, "auth.test", {}, as_json=True)
+    _BOT_USER = str(body.get("user_id") or "")
+    _BOT_ID = str(body.get("bot_id") or "")
+    return _BOT_USER, _BOT_ID
+
+
 def bot_user_id(bot_token):
-    global _BOT_USER
-    if _BOT_USER:
-        return _BOT_USER
-    _BOT_USER = str(slack_api(bot_token, "auth.test", {}, as_json=True).get("user_id") or "")
-    return _BOT_USER
+    user_id, _bot_id = bot_identity(bot_token)
+    return user_id
+
+
+def route_slack_event(event, our_user, our_bot):
+    # app_mention from another bot includes bot_id. A blanket bot_id skip drops
+    # those notifications. Ignore only this bot, so its own replies do not loop.
+    kind = event.get("type") or ""
+    if kind not in ("app_mention", "message"):
+        return ""
+    subtype = event.get("subtype") or ""
+    if subtype and subtype != "bot_message":
+        return ""
+    text = event.get("text") or ""
+    if contains_here(text):
+        return "here"
+    user = str(event.get("user") or "")
+    bot = str(event.get("bot_id") or "")
+    if (our_user and user == our_user) or (our_bot and bot == our_bot):
+        return ""
+    if kind == "app_mention":
+        return "mention"
+    if our_user and "<@{0}>".format(our_user) in text:
+        return "mention"
+    if not our_user and USER_MENTION.search(text):
+        return "mention"
+    return ""
 
 
 def add_inbox(bot_token, channel, timestamp):
@@ -677,26 +761,218 @@ def bot_in_channel(bot_token, channel):
             return False
 
 
-def remember_message(channel, timestamp):
+def seen_key(channel, timestamp):
+    return "{0}:{1}".format(channel, timestamp)
+
+
+def replay_path():
+    return state_dir() / "replay.json"
+
+
+def load_replay():
+    try:
+        data = json.loads(replay_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        data = None
+    if not isinstance(data, dict) or "replay_from" not in data:
+        data = {"replay_from": time.time(), "seen": []}
+        save_replay(data)
+    data["seen"] = [str(item) for item in (data.get("seen") or [])][-2000:]
+    return data
+
+
+def save_replay(data):
+    payload = {
+        "replay_from": float(data.get("replay_from") or time.time()),
+        "seen": [str(item) for item in (data.get("seen") or [])][-2000:],
+    }
+    path = replay_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
+def load_seen_memory():
+    with _REPLAY_LOCK:
+        data = load_replay()
+        for key in data.get("seen") or []:
+            _SEEN.add(key)
+        return float(data["replay_from"])
+
+
+def claim_message(channel, timestamp):
     if not channel or not timestamp:
-        return False
-    key = (channel, timestamp)
-    if key in _SEEN:
         return True
-    _SEEN.add(key)
-    if len(_SEEN) > 500:
-        _SEEN.clear()
+    key = seen_key(channel, timestamp)
+    with _REPLAY_LOCK:
+        if key in _SEEN:
+            return False
         _SEEN.add(key)
-    return False
+        return True
+
+
+def release_message(channel, timestamp):
+    if not channel or not timestamp:
+        return
+    with _REPLAY_LOCK:
+        _SEEN.discard(seen_key(channel, timestamp))
+
+
+def persist_seen(channel, timestamp):
+    if not channel or not timestamp:
+        return
+    key = seen_key(channel, timestamp)
+    with _REPLAY_LOCK:
+        data = load_replay()
+        seen = list(data.get("seen") or [])
+        if key not in seen:
+            seen.append(key)
+        data["seen"] = seen
+        save_replay(data)
+        _SEEN.add(key)
+
+
+def catchup_events(channel, messages, seen, replay_from):
+    chosen = []
+    try:
+        start = float(replay_from)
+    except (TypeError, ValueError):
+        start = 0.0
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        ts = str(msg.get("ts") or "")
+        try:
+            newer = float(ts) > start
+        except (TypeError, ValueError):
+            newer = False
+        if not ts or not newer:
+            continue
+        key = seen_key(channel, ts)
+        if key in seen:
+            continue
+        event = dict(msg)
+        event["channel"] = channel
+        event["type"] = event.get("type") or "message"
+        chosen.append(event)
+    chosen.sort(key=lambda item: float(item.get("ts") or 0))
+    return chosen
+
+
+def list_bot_channels(bot_token):
+    found = []
+    cursor = ""
+    while True:
+        params = {
+            "types": "public_channel,private_channel",
+            "exclude_archived": "true",
+            "limit": 200,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        body = slack_api(bot_token, "users.conversations", params)
+        for channel in body.get("channels") or []:
+            if channel.get("id"):
+                found.append(channel["id"])
+        cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+        if not cursor:
+            return found
+
+
+def channel_messages_since(bot_token, channel, replay_from):
+    oldest = "{0:.6f}".format(float(replay_from) - 1.0)
+    found = []
+    cursor = ""
+    for _page in range(5):
+        params = {"channel": channel, "oldest": oldest, "inclusive": "false", "limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        body = slack_api(bot_token, "conversations.history", params)
+        batch = body.get("messages") or []
+        found.extend(batch)
+        cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+        if not cursor:
+            break
+    replies = []
+    for msg in found:
+        parent = str(msg.get("ts") or "")
+        latest = str(msg.get("latest_reply") or "")
+        try:
+            has_new_reply = float(latest) > float(replay_from)
+        except (TypeError, ValueError):
+            has_new_reply = False
+        if not parent or not has_new_reply:
+            continue
+        body = slack_api(bot_token, "conversations.replies", {
+            "channel": channel,
+            "ts": parent,
+            "oldest": oldest,
+            "inclusive": "false",
+            "limit": 100,
+        })
+        replies.extend(body.get("messages") or [])
+    return found + replies
+
+
+def catch_up(bot_token, generation):
+    started = time.time()
+    try:
+        our_user, our_bot = bot_identity(bot_token)
+    except RuntimeError as exc:
+        print("Catch-up failed: {0}".format(public_error(exc)), flush=True)
+        return
+    try:
+        channels = list_bot_channels(bot_token)
+    except Exception as exc:
+        print("Catch-up failed: {0}".format(public_error(exc)), flush=True)
+        return
+    with _REPLAY_LOCK:
+        replay_from = float(load_replay()["replay_from"])
+        seen = set(load_replay().get("seen") or [])
+    pending = []
+    complete = True
+    for channel in channels:
+        try:
+            messages = channel_messages_since(bot_token, channel, replay_from)
+        except Exception as exc:
+            complete = False
+            print("Catch-up failed for {0}: {1}".format(channel, public_error(exc)), flush=True)
+            continue
+        for event in catchup_events(channel, messages, seen, replay_from):
+            if not route_slack_event(event, our_user, our_bot):
+                continue
+            key = seen_key(channel, event.get("ts") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append(event)
+    if pending:
+        print("Catch-up found {0} mention(s) from while the socket was down.".format(len(pending)), flush=True)
+    for event in pending:
+        handle_slack_event(bot_token, event)
+    if not complete:
+        return
+    with _REPLAY_LOCK:
+        if generation != _SOCKET_GEN or not _SOCKET_OK:
+            return
+        data = load_replay()
+        data["replay_from"] = started
+        save_replay(data)
 
 
 def deliver_to_session(bot_token, session, channel, thread, prompt):
-    if session["id"] in active_session_ids() and session_turn_busy(session.get("dir") or ""):
-        save_held(session["id"], channel, thread, prompt)
-        post_slack(bot_token, channel, thread, HOLD_REPLY)
+    action = plan_delivery(
+        "one",
+        session["id"] in active_session_ids(),
+        session_turn_busy(session.get("dir") or ""),
+        delivery_busy(session["id"]),
+    )
+    if action == "hold":
+        hold_mention(bot_token, session, channel, thread, prompt)
         return
     print("Delivering to {0}.".format(session["title"]), flush=True)
-    start_delivery(bot_token, session, channel, thread, prompt)
+    if not start_delivery(bot_token, session, channel, thread, prompt):
+        hold_mention(bot_token, session, channel, thread, prompt)
 
 
 def handle_join(bot_token, channel, thread, session, leaving):
@@ -711,10 +987,35 @@ def handle_join(bot_token, channel, thread, session, leaving):
     post_slack(bot_token, channel, thread, "{0} is in this channel.".format(session["title"]))
 
 
+def accept_delivery(bot_token, session, channel, thread, prompt, origin_ts):
+    title = session.get("title") or session.get("id") or "that session"
+    try:
+        deliver_to_session(bot_token, session, channel, thread, prompt)
+    except Exception as exc:
+        reason = public_error(exc)
+        print("Delivery failed for {0}: {1}".format(title, reason), flush=True)
+        try:
+            post_slack(
+                bot_token,
+                channel,
+                thread,
+                "Could not deliver this mention to {0}. {1}".format(title, reason),
+            )
+        except Exception as post_exc:
+            print(
+                "Delivery failed for {0}: could not post the failure: {1}".format(title, public_error(post_exc)),
+                flush=True,
+            )
+        return False
+    add_inbox(bot_token, channel, origin_ts)
+    return True
+
+
 def handle_here(bot_token, event):
     channel = event.get("channel") or ""
     thread = event.get("thread_ts") or event.get("ts") or ""
     if not bot_in_channel(bot_token, channel):
+        print("Delivery failed for @here in {0}: bot is not in the channel.".format(channel), flush=True)
         return
     self_tag, prompt = here_broadcast(event.get("text") or "")
     if not prompt:
@@ -736,14 +1037,15 @@ def handle_here(bot_token, event):
             continue
         resolved = resolve_session(title, grok_sessions())
         if resolved["status"] != "one":
+            reason = "no session with that title" if resolved["status"] == "none" else "more than one session matches"
+            print("Delivery failed for {0}: {1}.".format(title, reason), flush=True)
             continue
         session = resolved["session"]
         if not session.get("manual"):
             continue
-        deliver_to_session(bot_token, session, channel, thread, slack_prompt(channel, thread, prompt))
-        delivered = True
+        if accept_delivery(bot_token, session, channel, thread, slack_prompt(channel, thread, prompt), event.get("ts") or ""):
+            delivered = True
     if delivered:
-        add_inbox(bot_token, channel, event.get("ts") or "")
         return
     post_slack(bot_token, channel, thread, "No other named session is in this channel.")
 
@@ -777,9 +1079,11 @@ def handle_mention(bot_token, event):
         return
     resolved = resolve_session(request["tag"], grok_sessions())
     if resolved["status"] == "none":
+        print("Delivery failed for {0}: no session with that title.".format(request["tag"]), flush=True)
         post_slack(bot_token, channel, thread, "No session on this desktop is named {0}.".format(request["tag"]))
         return
     if resolved["status"] == "many":
+        print("Delivery failed for {0}: more than one session matches.".format(request["tag"]), flush=True)
         lines = ["{0} — {1}".format(row["title"], row["cwd"]) for row in resolved["sessions"]]
         post_slack(
             bot_token,
@@ -790,34 +1094,33 @@ def handle_mention(bot_token, event):
         return
     session = resolved["session"]
     prompt = slack_prompt(channel, thread, request["prompt"])
-    deliver_to_session(bot_token, session, channel, thread, prompt)
-    add_inbox(bot_token, channel, event.get("ts") or "")
+    accept_delivery(bot_token, session, channel, thread, prompt, event.get("ts") or "")
 
 
 def handle_slack_event(bot_token, event):
-    kind = event.get("type") or ""
-    if kind not in ("app_mention", "message"):
+    our_user = ""
+    our_bot = ""
+    try:
+        our_user, our_bot = bot_identity(bot_token)
+    except RuntimeError as exc:
+        print("Bot identity failed: {0}".format(public_error(exc)), flush=True)
+    route = route_slack_event(event, our_user, our_bot)
+    if not route:
         return
-    if event.get("subtype"):
-        return
-    text = event.get("text") or ""
     channel = event.get("channel") or ""
     timestamp = event.get("ts") or ""
-    if remember_message(channel, timestamp):
-        return
-    if contains_here(text):
-        handle_here(bot_token, event)
-        return
-    if event.get("bot_id"):
+    if not claim_message(channel, timestamp):
         return
     try:
-        if event.get("user") and event.get("user") == bot_user_id(bot_token):
-            return
-    except RuntimeError as exc:
-        print("Bot identity failed: {0}".format(exc), flush=True)
-    if kind != "app_mention" and not USER_MENTION.search(text):
+        if route == "here":
+            handle_here(bot_token, event)
+        else:
+            handle_mention(bot_token, event)
+    except Exception as exc:
+        release_message(channel, timestamp)
+        print("Delivery failed: {0}".format(public_error(exc)), flush=True)
         return
-    handle_mention(bot_token, event)
+    persist_seen(channel, timestamp)
 
 
 def _lock_file(directory):
@@ -878,17 +1181,25 @@ def _held_scan_loop(bot_token):
         try:
             deliver_held(bot_token)
         except Exception as exc:
-            print("Held delivery error: {0}".format(exc), flush=True)
+            print("Held delivery error: {0}".format(public_error(exc)), flush=True)
 
 
 def run_listener(app_token, bot_token):
+    global _SOCKET_GEN, _SOCKET_OK
+    script = str(Path(__file__).resolve())
     print("Slack listener starting. Mentions route as @bot #session-title.", flush=True)
+    print("Listener lock held by {0}".format(script), flush=True)
+    load_seen_memory()
     threading.Thread(target=_held_scan_loop, args=(bot_token,), daemon=True).start()
     while True:
         slack = None
         try:
             slack = connect_websocket(open_socket_url(app_token))
+            _SOCKET_GEN += 1
+            generation = _SOCKET_GEN
+            _SOCKET_OK = True
             print("WebSocket connected.", flush=True)
+            threading.Thread(target=catch_up, args=(bot_token, generation), daemon=True).start()
             deliver_held(bot_token)
             while True:
                 incoming = slack.recv_text()
@@ -907,11 +1218,62 @@ def run_listener(app_token, bot_token):
                 event = event_from(message)
                 handle_slack_event(bot_token, event)
         except Exception as exc:
-            print("Listener error: {0}".format(exc), flush=True)
+            print("Listener error: {0}".format(public_error(exc)), flush=True)
         finally:
+            _SOCKET_OK = False
             if slack is not None:
                 slack.close()
         time.sleep(5)
+
+
+def parse_post_args(argv):
+    channel = ""
+    thread_ts = ""
+    text_file = ""
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--post":
+            index += 1
+            continue
+        if item in ("--channel", "--thread-ts", "--text-file") and index + 1 < len(argv):
+            value = argv[index + 1]
+            if item == "--channel":
+                channel = value
+            elif item == "--thread-ts":
+                thread_ts = value
+            else:
+                text_file = value
+            index += 2
+            continue
+        return None
+    if not channel or not thread_ts or not text_file:
+        return None
+    return {"channel": channel, "thread_ts": thread_ts, "text_file": text_file}
+
+
+def post_command(argv):
+    parsed = parse_post_args(argv)
+    if not parsed:
+        print("usage: python scripts/listen.py --post --channel C0 --thread-ts TS --text-file PATH", flush=True)
+        return 2
+    try:
+        text = Path(parsed["text_file"]).read_text(encoding="utf-8")
+    except OSError:
+        print("text_file", flush=True)
+        return 2
+    token = env_value("SLACK_BOT_TOKEN")
+    if not token.startswith("xoxb-"):
+        print("missing_token", flush=True)
+        return 0
+    try:
+        post_slack(token, parsed["channel"], parsed["thread_ts"], text)
+    except Exception as exc:
+        code = str(exc).splitlines()[0] if isinstance(exc, RuntimeError) else public_error(exc)
+        print(code, flush=True)
+        return 0
+    print("ok", flush=True)
+    return 0
 
 
 def _self_test_turn_busy():
@@ -945,6 +1307,30 @@ def self_test():
         raise SystemExit("a mention without a session tag should not route")
     if not contains_here("<!here> look"):
         raise SystemExit("@here should be recognized")
+    other_bot = {
+        "type": "message",
+        "user": "UOTHER",
+        "bot_id": "BOTHER",
+        "text": "<@UUS> #LottoBill-cli the feed did not post",
+    }
+    if route_slack_event(other_bot, "UUS", "BOURS") != "mention":
+        raise SystemExit("a mention from another bot should route")
+    if route_slack_event(dict(other_bot, type="app_mention"), "UUS", "BOURS") != "mention":
+        raise SystemExit("an app_mention from another bot should route")
+    classic = dict(other_bot, subtype="bot_message")
+    if route_slack_event(classic, "UUS", "BOURS") != "mention":
+        raise SystemExit("a bot_message mention should route")
+    own = {"type": "message", "user": "UUS", "bot_id": "BOURS", "text": "From @desk #LottoBill-cli ok"}
+    if route_slack_event(own, "UUS", "BOURS"):
+        raise SystemExit("this bot's own message should not route")
+    own_here = dict(own, text="From @desk #LottoBill-cli <!here> look")
+    if route_slack_event(own_here, "UUS", "BOURS") != "here":
+        raise SystemExit("this bot's @here should still broadcast")
+    if route_slack_event({"type": "message", "subtype": "channel_join", "text": "<@UUS> hi"}, "UUS", "BOURS"):
+        raise SystemExit("a channel join should not route")
+    stranger = {"type": "message", "user": "UHUMAN", "text": "<@UOTHER> #LottoBill-cli hello"}
+    if route_slack_event(stranger, "UUS", "BOURS"):
+        raise SystemExit("a mention of someone else should not route")
     self_tag, body = here_broadcast("From @grokcli-menashedesk #server-admin <!here> hello")
     if self_tag != "server-admin" or body != "hello":
         raise SystemExit("@here from a session should exclude that session")
@@ -973,6 +1359,40 @@ def self_test():
     ])
     if many["status"] != "many":
         raise SystemExit("two manual titles should stay ambiguous")
+    lotto = resolve_session("LottoBill-cli", [
+        {"id": "gen", "title": "LottoBill-cli", "key": title_key("LottoBill-cli"), "manual": False, "cwd": "D:\\gen"},
+        {"id": "live", "title": "LottoBill-cli", "key": title_key("LottoBill-cli"), "manual": True, "cwd": "D:\\Git\\fipllc\\LottoBill"},
+    ])
+    if lotto["status"] != "one" or lotto["session"]["id"] != "live":
+        raise SystemExit("a manual title should be the one that is delivered")
+    if plan_delivery("one", True, True, False) != "hold":
+        raise SystemExit("a busy open session should be held")
+    if plan_delivery("one", True, False, True) != "hold":
+        raise SystemExit("a session that is already receiving a mention should be held")
+    if plan_delivery("one", True, False, False) != "deliver":
+        raise SystemExit("an open idle session should be delivered")
+    if plan_delivery("one", False, False, False) != "deliver":
+        raise SystemExit("a closed session should be delivered")
+    outage = [
+        {"ts": "999.0", "text": "<@UUS> #LottoBill-cli too old"},
+        {"ts": "1001.5", "user": "UOTHER", "bot_id": "BOTHER", "text": "<@UUS> #LottoBill-cli check the listener"},
+        {"ts": "1002.0", "text": "<@UUS> #LottoBill-cli already seen"},
+    ]
+    queued = catchup_events("C0", outage, {"C0:1002.0"}, 1000.0)
+    if len(queued) != 1 or queued[0]["ts"] != "1001.5" or queued[0]["channel"] != "C0":
+        raise SystemExit("a mention during a socket outage should be queued once")
+    if route_slack_event(queued[0], "UUS", "BOURS") != "mention":
+        raise SystemExit("a queued outage mention should route")
+    if catchup_events("C0", outage, {"C0:1001.5", "C0:1002.0"}, 1000.0):
+        raise SystemExit("a queued mention should not be delivered twice")
+    posted = parse_post_args(["--post", "--channel", "C0", "--thread-ts", "1.2", "--text-file", "reply.txt"])
+    if not posted or posted["channel"] != "C0" or posted["thread_ts"] != "1.2" or posted["text_file"] != "reply.txt":
+        raise SystemExit("post command arguments should parse")
+    if parse_post_args(["--post", "--channel", "C0"]):
+        raise SystemExit("a post command missing arguments should fail")
+    hidden = public_error(RuntimeError("failed wss://example.invalid/secret xoxb-abc-def"))
+    if "wss://" in hidden or "xoxb-" in hidden:
+        raise SystemExit("errors must not include a socket url or a token")
     quoted = shell_single_quoted("'xapp-a'\\''b'")
     if quoted != "xapp-a'b":
         raise SystemExit("env quote parse failed")
@@ -1125,6 +1545,8 @@ def _self_test_lock():
 def main(argv):
     if "--self-test" in argv:
         return self_test()
+    if "--post" in argv:
+        return post_command(argv)
     if not take_listener_lock():
         print("Slack listener already running.", flush=True)
         return 0

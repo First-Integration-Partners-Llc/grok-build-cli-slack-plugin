@@ -10,9 +10,9 @@ description: >
 
 # Reply in the Slack thread
 
-This desktop has one Slack bot. Its name is `SLACK_DESKTOP_NAME`. It posts as itself. A mention `@that-name #session-title` delivers the rest of the text to the local session with that title.
+`/grok-build-cli-slack-plugin` only loads these instructions. It does not fetch Slack, replay a missed mention, or post.
 
-A prompt that starts with `From Slack:` is that delivery. The header names the thread:
+The work starts when the user message begins with `From Slack:` and names `channel` and `thread_ts`. That message is the mention.
 
 ```text
 From Slack:
@@ -22,24 +22,34 @@ thread_ts: 123.456
 <the request>
 ```
 
-Do the requested work. Then post the answer in that thread with `chat.postMessage`, as plain text:
+Do the requested work. Do not look the channel up through a Slack connection that posts as the signed-in user.
+
+Post one reply with this plugin's post command, from the plugin root (the directory that contains `scripts/listen.py`). Write the reply to a text file so the shell does not mangle a multi-line answer. Do not write an HTTP script. Do not call the official Slack MCP. The command reads `SLACK_BOT_TOKEN` the same way the listener does, and it does not print the token.
 
 ```text
-From @<SLACK_DESKTOP_NAME> #<this session's title> <answer>
+python scripts/listen.py --post --channel C0123 --thread-ts "123.456" --text-file reply.txt
 ```
 
-Do not wrap the bot name in `<@U...>`. That mentions the bot again. Use `SLACK_BOT_TOKEN` from the environment. On Windows, read it from the User environment when the process does not have it. Do not print the token, the app token, or a `wss://` URL.
+Quote `thread_ts`. An unquoted timestamp is rounded by PowerShell and the reply misses the thread. Exit 0 prints `ok` or the Slack error code.
 
-`:inbox_tray:` on the originating message is the listener's receipt. It is not the answer.
-
-Post `<!here>` only when the task itself is a broadcast:
+The reply text is exactly:
 
 ```text
-From @<SLACK_DESKTOP_NAME> #<this session's title> <!here> <message>
+From @<SLACK_DESKTOP_NAME> #<this session title> <answer>
 ```
 
-A prompt that arrived from `@here` is not itself a reason to broadcast. `@here` reaches the named sessions that were added to that channel on this runtime, except the session named on that line. It does not replace between-bot messaging.
+`SLACK_DESKTOP_NAME` is the desktop bot's name. Read it from the environment. On Windows, if the process does not have it, read the User environment. Do not print `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, or a `wss://` URL.
 
-If the header has no channel, find the mention in the channels this bot has joined and reply in that thread. `not_in_channel` means the bot needs `/invite`. Do not post as the signed-in user, and do not use a Slack connection that posts as that user.
+Do not wrap the bot name in `<@U...>`. That mentions the bot again and routes the answer back into this plugin.
 
-Install, tokens, and the listener are in the plugin `README.md`.
+`:inbox_tray:` on the originating message is the listener's receipt. It is added when the listener accepts the mention for delivery or hold. It is not the answer. The thread reply is the answer.
+
+If the prompt did not start with `From Slack:`, say that delivery has not happened. Do not scrape Slack as the signed-in user to compensate, unless the person explicitly asks for a manual read.
+
+`@here` is only for sessions added with `@bot #session-title join`. A direct `#session-title` mention does not need join. Post `<!here>` only when the task itself is a broadcast:
+
+```text
+From @<SLACK_DESKTOP_NAME> #<this session title> <!here> <message>
+```
+
+A prompt that arrived from `@here` is not itself a reason to broadcast. `not_in_channel` means the bot needs `/invite`.

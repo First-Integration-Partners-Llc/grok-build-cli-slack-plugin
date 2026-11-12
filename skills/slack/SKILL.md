@@ -1,14 +1,40 @@
 ---
 name: slack
-description: Speak in Slack as this desktop's Grok Build bot, and route an @mention plus #session-title to that session. Use when a Slack mention should reach a local session or this desktop should post under its own bot name.
+description: >
+  Speak in Slack as this desktop's Grok Build bot, and route an @mention
+  plus #session-title to that session. Use when a Slack mention should
+  reach a local session, or when a From Slack: prompt should be answered
+  with scripts/listen.py --post.
 ---
 
 # Slack
 
-Post with this desktop's bot token. The name in the channel is the name chosen at connect time. Do not post as the signed-in user.
+Post as this desktop's bot. Do not post as the signed-in user. Do not use a Slack connection that posts as that user.
 
-The desktop listener starts with Grok Build on Windows, macOS, and Linux. The same program is `scripts/listen.py`. macOS runs it through `scripts/listen.macos.sh`, Linux through `scripts/listen.linux.sh`, and Windows through `scripts/listen.ps1`. An incoming mention addressed to this bot is routed when it carries `#session-title`. The title is matched on this machine. The words after the tag are the prompt. `@here` goes to the named sessions added to that channel with `@bot #session-name join`, except the sender named on the same line.
+`/grok-build-cli-slack-plugin` only loads the reply instructions. It does not fetch Slack.
 
-Submit that prompt to the session. If the session is closed, or open and waiting for the next prompt, deliver it now. If a reply is already in progress, hold the message, say so in the Slack thread, and deliver it when that reply finishes. If two sessions share the title, list their directories in the thread and wait.
+A mention `@desktop-name #session-title` plus the request is delivered by the listener. The session receives one prompt that starts with `From Slack:` and names `channel` and `thread_ts`. That prompt is the mention. A direct `#session-title` mention does not need join.
 
-The bot can read and post only where it has been invited. `not_in_channel` means ask for `/invite @<desktop name>`.
+`@here` reaches only the sessions added in that channel with `@bot #session-title join`, except the session named on that line.
+
+If the session is closed, or open and its last turn has ended, the listener delivers the prompt now. If the last turn is still started, it posts `That session is busy on this desktop. I will deliver this when it is free.` and delivers once when the turn ends. If two sessions share the title, it lists their directories and waits.
+
+`:inbox_tray:` is the listener's receipt, added when the mention is accepted. The thread reply is the answer.
+
+If the user message does not start with `From Slack:`, delivery has not happened. Say so. Do not scrape Slack as the signed-in user unless the person explicitly asks for a manual read.
+
+When the message does start with `From Slack:`, do the work, then post from the plugin root (the directory that contains `scripts/listen.py`):
+
+```text
+python scripts/listen.py --post --channel C0123 --thread-ts "123.456" --text-file reply.txt
+```
+
+Quote `thread_ts`. An unquoted timestamp is rounded by PowerShell and the reply misses the thread.
+
+The text file is one reply:
+
+```text
+From @<SLACK_DESKTOP_NAME> #<this session title> <answer>
+```
+
+Do not wrap the bot name in `<@U...>`. Do not write an HTTP script. Do not call the official Slack MCP. The command reads the bot token and does not print it. `ok` means the reply was posted. Any other line is the Slack error code. `not_in_channel` means the bot needs `/invite`.
