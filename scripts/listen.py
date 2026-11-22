@@ -2,6 +2,8 @@
 # Stdlib only. Windows, macOS, and Linux launchers call this file.
 #
 #   python listen.py
+#   python listen.py --post --channel C0 --thread-ts TS --text-file PATH
+#   python listen.py --history --channel C0 [--thread-ts TS]
 #   python listen.py --self-test
 
 import base64
@@ -386,10 +388,13 @@ def delivery_busy(session_id):
         return session_id in _BUSY
 
 
+def redact_text(text):
+    text = re.sub(r"xox[baprs]-[A-Za-z0-9-]+", "[redacted]", str(text or ""))
+    return re.sub(r"wss://\S+", "[socket]", text)
+
+
 def public_error(exc):
-    text = str(exc).replace("\n", " ")
-    text = re.sub(r"xox[baprs]-[A-Za-z0-9-]+", "[redacted]", text)
-    text = re.sub(r"wss://\S+", "[socket]", text)
+    text = redact_text(str(exc).replace("\n", " "))
     if len(text) > 300:
         text = text[:300]
     return text
@@ -1226,6 +1231,118 @@ def run_listener(app_token, bot_token):
         time.sleep(5)
 
 
+def format_history(messages):
+    # Slack returns one page newest first. Print oldest first.
+    ordered = [msg for msg in (messages or []) if isinstance(msg, dict) and msg.get("ts")]
+    ordered.reverse()
+    blocks = []
+    for msg in ordered:
+        ts = str(msg.get("ts") or "")
+        parts = ["ts={0}".format(ts)]
+        if msg.get("user"):
+            parts.append("user={0}".format(msg.get("user")))
+        if msg.get("bot_id"):
+            parts.append("bot={0}".format(msg.get("bot_id")))
+        thread = str(msg.get("thread_ts") or "")
+        if thread and thread != ts:
+            parts.append("thread_ts={0}".format(thread))
+        subtype = str(msg.get("subtype") or "")
+        text = msg.get("text") or ""
+        if not text and subtype:
+            text = "[{0}]".format(subtype)
+        blocks.append(" ".join(parts) + "\n" + redact_text(text))
+    return "\n---\n".join(blocks)
+
+
+def parse_history_args(argv):
+    channel = ""
+    thread_ts = ""
+    oldest = ""
+    latest = ""
+    cursor = ""
+    limit = 30
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--history":
+            index += 1
+            continue
+        if item == "--limit" and index + 1 < len(argv):
+            raw = argv[index + 1]
+            if not raw.isdigit() or not 1 <= int(raw) <= 100:
+                return None
+            limit = int(raw)
+            index += 2
+            continue
+        if item in ("--channel", "--thread-ts", "--oldest", "--latest", "--cursor") and index + 1 < len(argv):
+            value = argv[index + 1]
+            if item == "--channel":
+                channel = value
+            elif item == "--thread-ts":
+                thread_ts = value
+            elif item == "--oldest":
+                oldest = value
+            elif item == "--latest":
+                latest = value
+            else:
+                cursor = value
+            index += 2
+            continue
+        return None
+    if not channel:
+        return None
+    return {
+        "channel": channel,
+        "thread_ts": thread_ts,
+        "oldest": oldest,
+        "latest": latest,
+        "cursor": cursor,
+        "limit": limit,
+    }
+
+
+def history_command(argv):
+    parsed = parse_history_args(argv)
+    if not parsed:
+        print(
+            "usage: python scripts/listen.py --history --channel C0 "
+            "[--thread-ts TS] [--limit N] [--oldest TS] [--latest TS] [--cursor CURSOR]",
+            flush=True,
+        )
+        return 2
+    token = env_value("SLACK_BOT_TOKEN")
+    if not token.startswith("xoxb-"):
+        print("missing_token", flush=True)
+        return 0
+    params = {"channel": parsed["channel"], "limit": str(parsed["limit"])}
+    if parsed["oldest"]:
+        params["oldest"] = parsed["oldest"]
+    if parsed["latest"]:
+        params["latest"] = parsed["latest"]
+    if parsed["cursor"]:
+        params["cursor"] = parsed["cursor"]
+    if parsed["thread_ts"]:
+        params["ts"] = parsed["thread_ts"]
+        method = "conversations.replies"
+    else:
+        method = "conversations.history"
+    try:
+        body = slack_api(token, method, params)
+    except Exception as exc:
+        code = str(exc).splitlines()[0] if isinstance(exc, RuntimeError) else public_error(exc)
+        print(redact_text(code), flush=True)
+        return 0
+    messages = body.get("messages") or []
+    cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+    print("messages={0}".format(len(messages)), flush=True)
+    if cursor:
+        print("cursor={0}".format(cursor), flush=True)
+    rendered = format_history(messages)
+    if rendered:
+        print(rendered, flush=True)
+    return 0
+
+
 def parse_post_args(argv):
     channel = ""
     thread_ts = ""
@@ -1390,6 +1507,24 @@ def self_test():
         raise SystemExit("post command arguments should parse")
     if parse_post_args(["--post", "--channel", "C0"]):
         raise SystemExit("a post command missing arguments should fail")
+    hist = parse_history_args([
+        "--history", "--channel", "C0", "--thread-ts", "1.200",
+        "--limit", "10", "--oldest", "1.0", "--latest", "2.0", "--cursor", "abc",
+    ])
+    if not hist or hist["channel"] != "C0" or hist["thread_ts"] != "1.200" or hist["limit"] != 10:
+        raise SystemExit("history command arguments should parse")
+    if hist["oldest"] != "1.0" or hist["latest"] != "2.0" or hist["cursor"] != "abc":
+        raise SystemExit("history bounds should parse")
+    if parse_history_args(["--history"]) or parse_history_args(["--history", "--channel", "C0", "--limit", "0"]):
+        raise SystemExit("a history command missing its channel or limit should fail")
+    rendered = format_history([
+        {"ts": "2.0", "user": "U2", "text": "later xoxb-abc-def"},
+        {"ts": "1.0", "user": "U1", "bot_id": "B1", "thread_ts": "9.0", "text": "see wss://example.invalid/secret"},
+    ])
+    if not rendered.startswith("ts=1.0") or "\n---\nts=2.0" not in rendered:
+        raise SystemExit("history should print oldest first")
+    if "xoxb-" in rendered or "wss://" in rendered or "thread_ts=9.0" not in rendered:
+        raise SystemExit("history text should redact secrets and keep the thread")
     hidden = public_error(RuntimeError("failed wss://example.invalid/secret xoxb-abc-def"))
     if "wss://" in hidden or "xoxb-" in hidden:
         raise SystemExit("errors must not include a socket url or a token")
@@ -1545,6 +1680,11 @@ def _self_test_lock():
 def main(argv):
     if "--self-test" in argv:
         return self_test()
+    if "--post" in argv and "--history" in argv:
+        print("usage: pass --post or --history, not both", flush=True)
+        return 2
+    if "--history" in argv:
+        return history_command(argv)
     if "--post" in argv:
         return post_command(argv)
     if not take_listener_lock():
