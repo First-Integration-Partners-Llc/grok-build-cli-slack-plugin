@@ -22,7 +22,7 @@ thread_ts: 123.456
 <the request>
 ```
 
-Do the requested work. Do not look the channel up through a Slack connection that posts as the signed-in user.
+Do the requested work. When the work needs messages already in that channel or thread, read them with `--history` below. Do not look the channel up through a Slack connection that posts as the signed-in user.
 
 Post one reply with this plugin's post command, from the plugin root (the directory that contains `scripts/listen.py`). Write the reply to a text file so the shell does not mangle a multi-line answer. Do not write an HTTP script. Do not call the official Slack MCP. The command reads `SLACK_BOT_TOKEN` the same way the listener does, and it does not print the token.
 
@@ -31,6 +31,23 @@ python scripts/listen.py --post --channel C0123 --thread-ts "123.456" --text-fil
 ```
 
 Quote `thread_ts`. An unquoted timestamp is rounded by PowerShell and the reply misses the thread. Exit 0 prints `ok` or the Slack error code.
+
+Read a channel or one thread with the same script. This does not take the listener lock. It calls Slack `conversations.history`, or `conversations.replies` when `--thread-ts` is set. The bot token already has `channels:history` and `groups:history`. Do not write an HTTP script.
+
+```text
+python scripts/listen.py --history --channel C0123
+python scripts/listen.py --history --channel C0123 --thread-ts "123.456"
+python scripts/listen.py --history --channel C0123 --limit 50 --oldest "123.000" --latest "124.000"
+```
+
+Quote `thread_ts`, `--oldest`, and `--latest`. Without `--thread-ts` the result is the latest top-level messages, printed oldest first. Replies inside a thread are not included. Pass the parent message's `ts` as `--thread-ts` to read that thread. `--limit` is 1 to 100 and defaults to 30. A first line `cursor=` means older messages remain. Pass that value as `--cursor` to continue. The command prints `messages=N`, then one block per message:
+
+```text
+ts=123.456 user=U012 bot=B012 thread_ts=123.000
+message text
+```
+
+`user=` is Slack's user id. `bot=` is present when a bot posted. A Slack error is printed as its error code. `missing_scope` means this bot token was issued before the history scopes. `not_in_channel` means the bot needs `/invite`. The command does not print the token.
 
 The reply text is exactly:
 

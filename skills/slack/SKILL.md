@@ -4,7 +4,7 @@ description: >
   Speak in Slack as this desktop's Grok Build bot, and route an @mention
   plus #session-title to that session. Use when a Slack mention should
   reach a local session, or when a From Slack: prompt should be answered
-  with scripts/listen.py --post.
+  with scripts/listen.py --post. Read a channel with scripts/listen.py --history.
 ---
 
 # Slack
@@ -38,3 +38,12 @@ From @<SLACK_DESKTOP_NAME> #<this session title> <answer>
 ```
 
 Do not wrap the bot name in `<@U...>`. Do not write an HTTP script. Do not call the official Slack MCP. The command reads the bot token and does not print it. `ok` means the reply was posted. Any other line is the Slack error code. `not_in_channel` means the bot needs `/invite`.
+
+To read messages already in the channel, run this from the same plugin root. It does not take the listener lock. Without `--thread-ts` it prints the latest top-level messages, oldest first. Pass the parent `ts` as `--thread-ts` to read that thread. Quote every timestamp.
+
+```text
+python scripts/listen.py --history --channel C0123
+python scripts/listen.py --history --channel C0123 --thread-ts "123.456"
+```
+
+The first line is `messages=N`. A `cursor=` line means older messages remain; pass it as `--cursor`. `--limit` is 1 to 100 and defaults to 30. Each message is `ts=... user=...` and, when Slack sent them, `bot=...` and `thread_ts=...`, then the text. A Slack error is printed as its error code. `missing_scope` means the bot token predates the history scopes. The command does not print the token.
